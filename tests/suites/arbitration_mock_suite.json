@@ -1,0 +1,49 @@
+{
+  "suite_name": "arbitration_mock_suite",
+  "tasks": [
+    {
+      "id": "task_01_unanimous",
+      "validation_pass": true,
+      "reflection_pass": true,
+      "claude_pass": true
+    },
+    {
+      "id": "task_02_claude_fp",
+      "validation_pass": true,
+      "reflection_pass": true,
+      "claude_pass": false
+    },
+    {
+      "id": "task_03_claude_fn",
+      "validation_pass": false,
+      "reflection_pass": true,
+      "claude_pass": true
+    },
+    {
+      "id": "task_04_unanimous_rej",
+      "validation_pass": false,
+      "reflection_pass": false,
+      "claude_pass": false
+    },
+    {
+      "id": "task_05_reflect_override",
+      "validation_pass": true,
+      "reflection_pass": false,
+      "claude_pass": true
+    },
+    {
+      "id": "task_06_budget_limit",
+      "validation_pass": true,
+      "reflection_pass": true,
+      "claude_pass": true,
+      "budget_limit": true
+    },
+    {
+      "id": "task_07_payload_limit",
+      "validation_pass": true,
+      "reflection_pass": true,
+      "claude_pass": true,
+      "payload_limit": true
+    }
+  ]
+}
