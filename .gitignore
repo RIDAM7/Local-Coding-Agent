@@ -44,6 +44,19 @@ symbols.json
 dummy_patch.json
 dummy_suite.json
 
+# ---- One-off dev / scratch / test scripts ----
+test_script*.py
+audit_*.py
+do_*.py
+fix_*.py
+patch_orchestrator.py
+rewrite_orchestrator.py
+wrap_orchestrator.py
+build_clean.py
+gen_md.py
+verify.py
+benchmark.py
+
 # ---- IDE / OS ----
 .idea/
 .vscode/
