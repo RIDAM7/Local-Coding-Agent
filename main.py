@@ -4,6 +4,8 @@ import os
 import argparse
 from agent.orchestrator import Orchestrator
 from agent.config import settings
+from agent.llm.preflight import preflight_check, tooling_check
+from agent.exceptions.errors import PreflightError
 
 async def main():
     # Use argparse for CLI commands
@@ -84,7 +86,17 @@ async def main():
         return
 
     print(f"\nExecuting task:\n{task_description}")
-    
+
+    # Preflight: validate tooling (rg + tree-sitter) and each role's
+    # provider/model/credentials before any work. Fails fast with a clear,
+    # secret-free message instead of a deep stack trace.
+    try:
+        tooling_check()
+        await preflight_check()
+    except PreflightError as e:
+        print(f"\n{e}")
+        return
+
     # Ensure index exists before running task
     idx_dir = orchestrator.retrieval_manager.index_dir
     ws = str(orchestrator.retrieval_manager.workspace)

@@ -1,14 +1,15 @@
 import json
 from pathlib import Path
-from agent.llm.client import OllamaClient
+from agent.llm.providers.base import BaseLLMClient
 from agent.models.schemas import Task, Plan, Patch, RetrievedContext
 from agent.config import settings, logger
 from agent.exceptions.errors import CoderError, LLMError
 
 class Coder:
-    def __init__(self, llm_client: OllamaClient):
+    def __init__(self, llm_client: BaseLLMClient):
         self.llm_client = llm_client
-        self.model = settings.coder_model
+        self.model = getattr(llm_client, "model", None) or settings.coder_model
+        self.last_usage = None
         self.workspace = settings.get_workspace_path()
 
     async def generate_patch(self, task: Task, plan: Plan, context: RetrievedContext) -> Patch:
@@ -61,7 +62,9 @@ Return ONLY valid JSON matching this schema. Do not include markdown formatting 
 """
         logger.info("Coder generating patch operations and commands...")
         try:
-            patch = await self.llm_client.generate_structured(self.model, prompt, Patch)
+            result = await self.llm_client.generate_structured(self.model, prompt, Patch)
+            self.last_usage = result.usage
+            patch = result.data
             logger.info(f"Coder successfully generated {len(patch.operations)} operations and {len(patch.commands)} commands.")
             return patch
         except LLMError as e:

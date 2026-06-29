@@ -1,6 +1,6 @@
 from datetime import datetime
 from pathlib import Path
-from agent.llm.client import OllamaClient
+from agent.llm.factory import build_client
 from agent.planner.core import Planner
 from agent.coder.core import Coder
 from agent.files.core import FileManager
@@ -10,8 +10,8 @@ from agent.retrieval import RipgrepSearch, TreeSitterIndexer, RepositoryMap, Sym
 from agent.validation import PatchValidator, BuildValidator, LintValidator, TestValidator
 from agent.repair import RollbackManager, RepairCoder, RepairManager, ConstraintExtractor, ConstraintValidator
 from agent.review.budget import BudgetManager
-from agent.models.schemas import Task, Report, Plan, RetrievedContext, ValidationReport, RepairResult, RepairMetrics, RepairPatch, RepairScope, RoutingCause, ExecutionOutcome
-from agent.exceptions.errors import AgentError
+from agent.models.schemas import Task, Report, Plan, RetrievedContext, ValidationReport, RepairResult, RepairMetrics, RepairPatch, RepairScope, RoutingCause, ExecutionOutcome, CommandExecution, ValidationDiagnostic
+from agent.exceptions.errors import AgentError, ExecutionError
 from agent.config import settings, logger
 from agent.review.confidence import ConfidenceEngine
 from agent.review.router import ReviewRouter
@@ -29,9 +29,10 @@ class Orchestrator:
         self.claude_enabled = claude_enabled
         self.claude_always_on = claude_always_on
         self.memory_manager = memory_manager
-        self.llm_client = OllamaClient()
-        self.planner = Planner(self.llm_client)
-        self.coder = Coder(self.llm_client)
+        # Phase 1: each role gets its own client from the factory. In default env
+        # every role resolves to a local Ollama client with that role's model.
+        self.planner = Planner(build_client("planner"))
+        self.coder = Coder(build_client("coder"))
         self.file_manager = FileManager(ws_path)
         self.executor = Executor(ws_path)
         self.reporter = Reporter(reports_dir)
@@ -51,9 +52,9 @@ class Orchestrator:
         
         # Repair components
         self.rollback_manager = RollbackManager(ws_path)
-        self.repair_coder = RepairCoder(self.llm_client, ws_path)
+        self.repair_coder = RepairCoder(build_client("repair"), ws_path)
         self.repair_manager = RepairManager(self.retrieval_manager, self.repair_coder, self.rollback_manager, self.memory_manager)
-        self.constraint_extractor = ConstraintExtractor(self.llm_client)
+        self.constraint_extractor = ConstraintExtractor(build_client("constraint"))
         
         # Review components
         self.confidence_engine = ConfidenceEngine()
@@ -63,14 +64,36 @@ class Orchestrator:
         self.arbitrator = Arbitrator()
         
         # Reflection component
-        self.reflection_manager = ReflectionManager(self.llm_client)
+        self.reflection_manager = ReflectionManager(build_client("reflection"))
 
     async def run(self, task_description: str, injected_memories: list = None) -> str:
         logger.info(f"Starting new task: {task_description}")
         
         original_task = Task(description=task_description)
         task = Task(description=task_description)
-        
+
+        # Phase 3: optional prompt refinement (toggleable, fail-open). Runs BEFORE
+        # constraint extraction / planning. The untouched original_task is always
+        # preserved for the report; ANY refiner failure falls back to the raw prompt
+        # so a run is never blocked. When REFINER_ENABLED is false (default) this
+        # whole block is skipped and the path is byte-for-byte the old one.
+        refinement = None
+        if settings.refiner_enabled:
+            try:
+                from agent.refiner.core import PromptRefiner
+                refiner = PromptRefiner(build_client("refiner"))
+                refinement = await refiner.refine(task_description)
+                refined_desc = refinement.refined_task
+                if refinement.acceptance_criteria:
+                    refined_desc += "\n\nAcceptance Criteria:\n" + "\n".join(
+                        f"- {c}" for c in refinement.acceptance_criteria
+                    )
+                task.description = refined_desc
+                logger.info("Prompt refiner rewrote the task for planning.")
+            except Exception as e:
+                logger.warning(f"Prompt refiner failed; falling back to raw prompt: {e}")
+                refinement = None
+
         # Phase 5.1: Memory Retrieval During Planning
         active_fingerprint = []
         try:
@@ -109,6 +132,7 @@ class Orchestrator:
         context = None
         files_modified = []
         commands_executed = []
+        proposed_commands = []
         execution_results = ""
         final_status = "FAILURE"
         
@@ -262,8 +286,40 @@ class Orchestrator:
                                 
                                 test_res = await self.test_validator.validate()
                                 validation_report.test_result = test_res
-                                
-                                all_success = build_res.success and lint_res.success and test_res.success
+
+                                # Phase 4a: optionally run the coder's proposed commands.
+                                # Gated behind EXECUTE_COMMANDS (default off) so nothing
+                                # runs silently. A non-zero exit is folded into the BUILD
+                                # diagnostic slot so the EXISTING self-healing repair loop
+                                # (classify -> retrieve -> repair -> rollback) reacts to it
+                                # exactly as it does to a failing build/test — no parallel path.
+                                proposed_commands = list(patch.commands or [])
+                                commands_success = True
+                                if proposed_commands and settings.execute_commands:
+                                    first_failed_cmd = None
+                                    for cmd in proposed_commands:
+                                        try:
+                                            cmd_result = await self.executor.run_command(cmd)
+                                        except ExecutionError as e:
+                                            cmd_result = CommandExecution(command=cmd, stdout="", stderr=str(e), exit_code=124, duration=0.0)
+                                        commands_executed.append(cmd_result)
+                                        if cmd_result.exit_code != 0:
+                                            commands_success = False
+                                            if first_failed_cmd is None:
+                                                first_failed_cmd = cmd_result
+                                    if first_failed_cmd is not None and build_res.success:
+                                        build_res = ValidationDiagnostic(
+                                            stage="BUILD",
+                                            command=first_failed_cmd.command,
+                                            success=False,
+                                            stdout=first_failed_cmd.stdout,
+                                            stderr=first_failed_cmd.stderr or first_failed_cmd.stdout,
+                                            exit_code=first_failed_cmd.exit_code,
+                                            duration=first_failed_cmd.duration,
+                                        )
+                                        validation_report.build_result = build_res
+
+                                all_success = build_res.success and lint_res.success and test_res.success and commands_success
                                 
                                 if attempts > 0:
                                     repair_history.append(RepairResult(
@@ -439,6 +495,18 @@ class Orchestrator:
             for res in context.results:
                 retrieved_symbols.extend(list(set([sym.name for sym in res.matched_symbols])))
                 
+        # Collect per-role LLM token usage for this run (foundation for Phase 7
+        # cost telemetry). Not yet surfaced in the Report schema; recorded on the
+        # orchestrator and logged. No secrets — provider/model/token counts only.
+        self.llm_usages = [
+            c.last_usage
+            for c in (self.planner, self.coder, self.constraint_extractor,
+                      self.repair_coder, self.reflection_manager)
+            if getattr(c, "last_usage", None) is not None
+        ]
+        if self.llm_usages:
+            logger.debug(f"LLM usage this run: {self.llm_usages}")
+
         report = Report(
             task=task.description,
             plan=plan,
@@ -449,6 +517,7 @@ class Orchestrator:
             repair_metrics=repair_metrics if 'repair_metrics' in locals() else None,
             files_modified=list(set(files_modified)),
             commands_executed=commands_executed,
+            proposed_commands=proposed_commands,
             execution_results=execution_results,
             final_status=final_status,
             routing_cause=routing_cause,
@@ -468,7 +537,7 @@ class Orchestrator:
             claude_false_approval_count=1 if (arbitration_report and arbitration_report.decision == "REJECT_VALIDATION_FAILED" and "CLAUDE" in arbitration_report.overridden_systems) else 0
         )
         
-        report_path = self.reporter.generate_report(report, constraints=constraints if 'constraints' in locals() else [], repair_scope=repair_scope if 'repair_scope' in locals() else None, rollback_results=rollback_results if 'rollback_results' in locals() else {})
+        report_path = self.reporter.generate_report(report, constraints=constraints if 'constraints' in locals() else [], repair_scope=repair_scope if 'repair_scope' in locals() else None, rollback_results=rollback_results if 'rollback_results' in locals() else {}, refinement=refinement, raw_task=original_task.description)
         logger.info(f"Task finished with status {final_status}. Report: {report_path}")
         
         return report_path

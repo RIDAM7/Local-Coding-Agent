@@ -43,9 +43,10 @@ def test_build_failure(engine, router):
     # Build (30%) + Test (30%) lost = max 40%
     assert report.confidence_score == 40.0
     assert report.review_required
-    
+
     decision = router.route(report)
-    assert decision == ReviewDecision.REFLECTION
+    # < 80 -> escalate to mandatory external review.
+    assert decision == ReviewDecision.MANDATORY_REVIEW
 
 def test_test_failure(engine, router):
     report = engine.evaluate(
@@ -61,7 +62,8 @@ def test_test_failure(engine, router):
     # Test (30%) lost = max 70%
     assert report.confidence_score == 70.0
     assert report.review_required
-    assert router.route(report) == ReviewDecision.REFLECTION
+    # < 80 -> mandatory external review.
+    assert router.route(report) == ReviewDecision.MANDATORY_REVIEW
 
 def test_multi_repair_success(engine, router):
     report = engine.evaluate(
@@ -94,7 +96,8 @@ def test_constraint_violation(engine, router):
     # 1 violation -> -20. Total = 80
     assert report.confidence_score == 80.0
     assert report.review_required
-    assert router.route(report) == ReviewDecision.REFLECTION
+    # 80 <= score < 95 -> review required (not auto-approved).
+    assert router.route(report) == ReviewDecision.REVIEW_REQUIRED
 
 def test_large_multi_file_modification(engine, router):
     report = engine.evaluate(
@@ -128,7 +131,8 @@ def test_complex_planner_output(engine, router):
     # Lost 6 points. Total = 94
     assert report.confidence_score == 94.0
     assert report.review_required
-    assert router.route(report) == ReviewDecision.REFLECTION
+    # 80 <= score < 95 -> review required.
+    assert router.route(report) == ReviewDecision.REVIEW_REQUIRED
 
 def test_multiple_penalties(engine, router):
     report = engine.evaluate(
@@ -144,7 +148,8 @@ def test_multiple_penalties(engine, router):
     # Total = 100 - 1 - 1.5 - 2 - 4 - 20 = 71.5
     assert report.confidence_score == 71.5
     assert report.review_required
-    assert router.route(report) == ReviewDecision.REFLECTION
+    # < 80 -> mandatory external review.
+    assert router.route(report) == ReviewDecision.MANDATORY_REVIEW
 
 def test_clamp_below_zero(engine, router):
     report = engine.evaluate(
@@ -161,4 +166,5 @@ def test_clamp_below_zero(engine, router):
     # Should clamp to 0
     assert report.confidence_score == 0.0
     assert report.review_required
-    assert router.route(report) == ReviewDecision.REFLECTION
+    # < 80 -> mandatory external review.
+    assert router.route(report) == ReviewDecision.MANDATORY_REVIEW

@@ -7,7 +7,8 @@ from agent.exceptions.errors import LLMError
 class ReflectionManager:
     def __init__(self, llm_client):
         self.llm_client = llm_client
-        self.model = settings.planner_model
+        self.model = getattr(llm_client, "model", None) or settings.planner_model
+        self.last_usage = None
 
     async def reflect(
         self,
@@ -44,7 +45,7 @@ class ReflectionManager:
         try:
             # We enforce a timeout internally or via asyncio
             import asyncio
-            report = await asyncio.wait_for(
+            result = await asyncio.wait_for(
                 self.llm_client.generate_structured(
                     model=self.model,
                     prompt=prompt,
@@ -52,6 +53,8 @@ class ReflectionManager:
                 ),
                 timeout=60.0  # Bounded reflection
             )
+            self.last_usage = result.usage
+            report = result.data
             report.execution_time_ms = (time.time() - start_time) * 1000
             report.model_name = self.model
             return report

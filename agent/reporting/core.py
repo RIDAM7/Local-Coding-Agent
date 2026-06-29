@@ -9,7 +9,7 @@ class Reporter:
         self.reports_dir = str(reports_dir) if reports_dir else "reports"
         os.makedirs(self.reports_dir, exist_ok=True)
 
-    def generate_report(self, report: Report, constraints: list = None, repair_scope = None, rollback_results: dict = None) -> str:
+    def generate_report(self, report: Report, constraints: list = None, repair_scope = None, rollback_results: dict = None, refinement = None, raw_task: str = None) -> str:
         logger.info("Generating markdown report...")
         
         report_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
@@ -26,7 +26,31 @@ class Reporter:
             f"**Status:** {report.final_status}\n",
             f"**Execution Results:** {report.execution_results}\n\n"
         ]
-        
+
+        # Phase 3: when the refiner ran, show the raw prompt alongside the refined
+        # rewrite so the user can audit exactly what was changed before planning.
+        if refinement:
+            content.append("## Prompt Refinement\n")
+            content.append("**Raw Prompt:**\n")
+            content.append(f"> {raw_task}\n\n" if raw_task else "> (unavailable)\n\n")
+            content.append(f"**Refined Task:**\n> {refinement.refined_task}\n\n")
+            content.append(f"**Clarified Goal:** {refinement.clarified_goal}\n\n")
+            if refinement.assumptions:
+                content.append("**Assumptions:**\n")
+                for a in refinement.assumptions:
+                    content.append(f"- {a}\n")
+                content.append("\n")
+            if refinement.acceptance_criteria:
+                content.append("**Acceptance Criteria:**\n")
+                for c in refinement.acceptance_criteria:
+                    content.append(f"- {c}\n")
+                content.append("\n")
+            if refinement.open_questions:
+                content.append("**Open Questions:**\n")
+                for q in refinement.open_questions:
+                    content.append(f"- {q}\n")
+                content.append("\n")
+
         if constraints:
             content.append("## Task Constraints\n")
             for c in constraints:
@@ -111,8 +135,9 @@ class Reporter:
             content.append("No files modified.\n")
         content.append("\n")
         
-        content.append(f"## Commands Executed\n")
+        content.append(f"## Commands\n")
         if report.commands_executed:
+            content.append("**Executed:**\n\n")
             for cmd in report.commands_executed:
                 content.append(f"### `{cmd.command}`\n")
                 content.append(f"- **Exit Code:** {cmd.exit_code}\n")
@@ -121,8 +146,14 @@ class Reporter:
                     content.append(f"**Stdout:**\n```\n{cmd.stdout}\n```\n")
                 if cmd.stderr:
                     content.append(f"**Stderr:**\n```\n{cmd.stderr}\n```\n")
+        elif report.proposed_commands:
+            # EXECUTE_COMMANDS is off: surface what the coder proposed but make it
+            # unambiguous that nothing was run.
+            content.append("**Proposed (NOT executed — set `EXECUTE_COMMANDS=true` to run):**\n")
+            for cmd in report.proposed_commands:
+                content.append(f"- `{cmd}`\n")
         else:
-            content.append("No commands executed.\n")
+            content.append("No commands.\n")
         content.append("\n")
         
         content.append(f"## Execution Results\n{report.execution_results}\n")

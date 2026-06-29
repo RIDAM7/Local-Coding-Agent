@@ -1,12 +1,13 @@
 from typing import List
 from agent.models.schemas import Constraint, ConstraintExtractionResult
-from agent.llm.client import OllamaClient
+from agent.llm.providers.base import BaseLLMClient
 from agent.config import settings, logger
 
 class ConstraintExtractor:
-    def __init__(self, llm_client: OllamaClient):
+    def __init__(self, llm_client: BaseLLMClient):
         self.llm_client = llm_client
-        self.model = settings.planner_model
+        self.model = getattr(llm_client, "model", None) or settings.planner_model
+        self.last_usage = None
 
     async def extract(self, task_description: str) -> ConstraintExtractionResult:
         constraint_keywords = [
@@ -33,7 +34,8 @@ If there are no constraints, return an empty list with success=True.
                 model=self.model,
                 schema=ConstraintExtractionResult
             )
-            return result
+            self.last_usage = result.usage
+            return result.data
         except Exception as e:
             logger.error(f"Failed to extract constraints: {e}")
             if has_constraint_language:

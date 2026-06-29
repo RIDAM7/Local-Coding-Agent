@@ -21,3 +21,7 @@ class FileOperationError(AgentError):
 class LLMError(AgentError):
     """Raised when the LLM client encounters an error."""
     pass
+
+class PreflightError(AgentError):
+    """Raised when pre-run validation of a role's provider/model/credentials fails."""
+    pass

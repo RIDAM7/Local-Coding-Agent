@@ -1,12 +1,13 @@
 from pathlib import Path
-from agent.llm.client import OllamaClient
+from agent.llm.providers.base import BaseLLMClient
 from agent.models.schemas import RepairContext, RepairPatch
 from agent.config import settings, logger
 
 class RepairCoder:
-    def __init__(self, llm_client: OllamaClient, workspace_path: Path = None):
+    def __init__(self, llm_client: BaseLLMClient, workspace_path: Path = None):
         self.llm_client = llm_client
-        self.model = settings.coder_model
+        self.model = getattr(llm_client, "model", None) or settings.coder_model
+        self.last_usage = None
         self.workspace = workspace_path if workspace_path else settings.get_workspace_path()
 
     async def generate_repair(self, context: RepairContext) -> RepairPatch:
@@ -77,11 +78,13 @@ Output strictly in JSON matching the RepairPatch schema. Do NOT return an empty 
 """
         
         try:
-            return await self.llm_client.generate_structured(
+            result = await self.llm_client.generate_structured(
                 prompt=prompt,
                 model=self.model,
                 schema=RepairPatch
             )
+            self.last_usage = result.usage
+            return result.data
         except Exception as e:
             logger.error(f"Failed to generate repair patch: {e}")
             raise

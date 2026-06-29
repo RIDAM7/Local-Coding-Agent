@@ -57,6 +57,9 @@ gen_md.py
 verify.py
 benchmark.py
 
+# ---- Planning (local only, not shipped) ----
+plan.md
+
 # ---- IDE / OS ----
 .idea/
 .vscode/
