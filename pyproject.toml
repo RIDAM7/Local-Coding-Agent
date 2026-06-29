@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "localcli"
+version = "0.6.0"
+description = "Local-first, multi-stage autonomous coding agent (Ollama by default; any role can run on a cloud model)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "localcli contributors" }]
+keywords = ["llm", "coding-agent", "ollama", "local-first", "ripgrep", "tree-sitter"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Topic :: Software Development :: Code Generators",
+]
+
+# Pinned to the known-good combination from requirements.txt (the tree-sitter
+# core/grammar versions in particular must stay compatible).
+dependencies = [
+    "aiohttp==3.9.5",
+    "aiofiles==23.2.1",
+    "pydantic==2.7.1",
+    "pydantic-settings==2.2.1",
+    "python-dotenv==1.0.1",
+    "tree-sitter==0.22.3",
+    "tree-sitter-python==0.21.0",
+    "tree-sitter-javascript==0.21.4",
+    "tree-sitter-typescript==0.21.2",
+]
+
+[project.optional-dependencies]
+# Test deps, installed-but-undeclared since Phase 1 — formalized here.
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+localcli = "agent.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/localcli/localcli"
+
+[tool.setuptools.packages.find]
+include = ["agent*"]

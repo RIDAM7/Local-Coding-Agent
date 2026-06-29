@@ -3,6 +3,7 @@ import os
 from datetime import datetime
 from agent.models.schemas import Report
 from agent.config import logger
+from agent.safety.redact import redact
 
 class Reporter:
     def __init__(self, reports_dir: Path = None):
@@ -16,9 +17,9 @@ class Reporter:
         filepath = os.path.join(self.reports_dir, f"report_{report_id}.md")
         json_filepath = os.path.join(self.reports_dir, f"report_{report_id}.json")
         
-        # Save JSON
+        # Save JSON (Phase 5: redact secrets so nothing sensitive ever lands in a report).
         with open(json_filepath, 'w', encoding='utf-8') as f:
-            f.write(report.model_dump_json(indent=2))
+            f.write(redact(report.model_dump_json(indent=2)))
             
         content = [
             f"# Execution Report: {report_id}\n",
@@ -154,8 +155,33 @@ class Reporter:
                 content.append(f"- `{cmd}`\n")
         else:
             content.append("No commands.\n")
+        # Phase 5: commands refused by the hard safety denylist (never run).
+        if report.blocked_commands:
+            content.append("\n**Blocked by safety denylist (NOT executed):**\n")
+            for cmd in report.blocked_commands:
+                content.append(f"- `{cmd}`\n")
         content.append("\n")
         
+        # Phase 7C: per-role token usage + estimated cost.
+        if report.cost_summary and report.cost_summary.per_role:
+            cs = report.cost_summary
+            content.append("## Cost & Token Usage\n")
+            content.append("| Role | Provider | Model | Input | Output | Est. Cost (USD) |\n")
+            content.append("|------|----------|-------|------:|-------:|----------------:|\n")
+            for r in cs.per_role:
+                content.append(f"| {r.role} | {r.provider} | {r.model} | {r.input_tokens} | {r.output_tokens} | ${r.est_cost:.6f} |\n")
+            content.append(f"| **Total** |  |  | **{cs.total_input_tokens}** | **{cs.total_output_tokens}** | **${cs.total_est_cost:.6f}** |\n\n")
+
+        # Phase 7B: git integration outcome.
+        if report.git_branch:
+            content.append("## Git\n")
+            content.append(f"- **Branch:** `{report.git_branch}`\n")
+            if report.git_commit:
+                content.append(f"- **Commit:** `{report.git_commit}`\n")
+            else:
+                content.append("- **Commit:** none (no changes committed)\n")
+            content.append("\n")
+
         content.append(f"## Execution Results\n{report.execution_results}\n")
         
         if rollback_results:
@@ -166,7 +192,7 @@ class Reporter:
         
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
-                f.writelines(content)
+                f.write(redact("".join(content)))
             logger.info(f"Report saved to {filepath}")
         except Exception as e:
             logger.error(f"Failed to write report to {filepath}: {e}")

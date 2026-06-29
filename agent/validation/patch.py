@@ -69,6 +69,33 @@ class PatchValidator:
                 else:
                     modified_operations.append(new_op)
 
+            elif op.type == "search_replace":
+                # Phase 7A: the search block MUST match the current file content
+                # EXACTLY ONCE. Zero or multiple matches => validation failure fed
+                # into the repair loop, never a silent wrong edit.
+                if not exists:
+                    errors.append(f"search_replace on '{op.path}' but the file does not exist. Use create_file/update_file instead.")
+                    is_valid = False
+                elif not op.search:
+                    errors.append(f"search_replace on '{op.path}' is missing a non-empty 'search' block.")
+                    is_valid = False
+                else:
+                    try:
+                        current = full_path.read_text(encoding='utf-8', errors='replace')
+                    except Exception as e:
+                        errors.append(f"search_replace on '{op.path}' could not read the file: {e}")
+                        is_valid = False
+                        continue
+                    count = current.count(op.search)
+                    if count == 0:
+                        errors.append(f"search_replace on '{op.path}': the 'search' block was not found. It must match the file content exactly.")
+                        is_valid = False
+                    elif count > 1:
+                        errors.append(f"search_replace on '{op.path}': the 'search' block is ambiguous ({count} matches). Make it unique (add surrounding context).")
+                        is_valid = False
+                    else:
+                        modified_operations.append(new_op)
+
         modified_patch = Patch(operations=modified_operations, commands=patch.commands)
 
         if errors:

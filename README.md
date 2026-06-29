@@ -79,8 +79,16 @@ fast with a clear, secret-free message. API keys are never logged or written to 
 
 ## Setup
 
-1. **Install dependencies:**
+1. **Install.** The project is packaged (`pyproject.toml`) and exposes a `localcli`
+   console command.
    ```bash
+   # As a tool (recommended for end users):
+   pipx install .
+
+   # Or for development (editable, with test deps):
+   pip install -e ".[dev]"
+
+   # Or the classic way (pinned deps, no console script):
    pip install -r requirements.txt
    ```
 
@@ -126,22 +134,37 @@ OPENAI_API_KEY=sk-...
 
 ## CLI usage
 
+After install, use the `localcli` command (every command also works via
+`python main.py ...` for backward compatibility).
+
 ```bash
+# Run an end-to-end task (index is updated automatically first)
+localcli run "Create calculator.py with add and subtract functions."
+localcli "Create calculator.py ..."        # bare-task shorthand for `run`
+
+# Phase 5 safety flags on a run:
+localcli run "..." --yes                    # skip confirmation prompts (CI); denylist still applies
+localcli run "..." --dry-run                # preview diffs + commands; write nothing, run nothing
+
+# Show the resolved role -> provider -> model routing table (no network):
+localcli models
+
+# Preflight: routing table + provider health + tooling check (rg, tree-sitter).
+# Exits non-zero if anything is misconfigured. Secrets are shown as set/missing only.
+localcli config check
+
 # Index the workspace (symbol + repo map under workspace/index/)
-python main.py index
-python main.py index --reindex        # force a full rebuild
+localcli index
+localcli index --reindex                    # force a full rebuild
 
 # Exercise retrieval/scoring without invoking the LLM
-python main.py search "jwt authentication"
+localcli search "jwt authentication"
 
 # Print parsed Tree-sitter symbols
-python main.py symbols
-
-# Run an end-to-end task (index is updated automatically first)
-python main.py "Create calculator.py with add and subtract functions."
+localcli symbols
 ```
-> Run `python main.py` with no arguments for interactive multiline input (submit with `Ctrl+Z` on
-> Windows, `Ctrl+D` on Linux/Mac).
+> Run `localcli run` (or `localcli`) with no task for interactive multiline input (submit with
+> `Ctrl+Z` on Windows, `Ctrl+D` on Linux/Mac).
 
 ## Project structure
 

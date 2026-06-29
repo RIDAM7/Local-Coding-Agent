@@ -68,7 +68,13 @@ class AgentSettings(BaseSettings):
     
     # Repair
     max_repair_attempts: int = 3
-    
+
+    # Phase 7B: git integration. When true AND workspace/ is a git repo AND not in
+    # --dry-run, create a task branch at run start and commit applied changes on a
+    # successful run (complementing the existing snapshot rollback). Off by default
+    # so existing runs are byte-for-byte unchanged.
+    git_integration: bool = False
+
     # Logging
     log_level: str = "DEBUG"
 
@@ -94,17 +100,25 @@ def setup_logging():
     # Prevent duplicate handlers
     if not logger.handlers:
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        
+
+        # Phase 5: scrub secrets from every record before it reaches a handler so
+        # nothing sensitive is ever written to logs/agent.log. Imported here (after
+        # settings exists) to avoid an import cycle with the safety package.
+        from agent.safety.redact import RedactionFilter
+        redaction_filter = RedactionFilter()
+
         # File handler
         fh = logging.FileHandler('logs/agent.log')
         fh.setLevel(log_level)
         fh.setFormatter(formatter)
+        fh.addFilter(redaction_filter)
         logger.addHandler(fh)
-        
+
         # Console handler
         ch = logging.StreamHandler(sys.stdout)
         ch.setLevel(log_level)
         ch.setFormatter(formatter)
+        ch.addFilter(redaction_filter)
         logger.addHandler(ch)
 
     return logger

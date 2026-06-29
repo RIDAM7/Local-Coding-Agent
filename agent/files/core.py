@@ -4,6 +4,25 @@ from typing import List, Dict
 import aiofiles
 from agent.config import settings, logger
 from agent.exceptions.errors import FileOperationError
+from agent.safety.jail import assert_within_workspace
+
+
+def apply_search_replace_text(content: str, search: str, replace: str) -> str:
+    """Apply a single search/replace to ``content`` (Phase 7A).
+
+    The ``search`` block must occur EXACTLY ONCE — zero or multiple matches raise
+    :class:`FileOperationError` so a wrong edit can never be applied silently. This
+    is a defense-in-depth backstop; the validator enforces the same invariant first.
+    """
+    if not search:
+        raise FileOperationError("search_replace requires a non-empty 'search' block.")
+    count = content.count(search)
+    if count == 0:
+        raise FileOperationError("search_replace: the 'search' block was not found in the file.")
+    if count > 1:
+        raise FileOperationError(f"search_replace: the 'search' block is ambiguous ({count} matches).")
+    return content.replace(search, replace or "", 1)
+
 
 class FileManager:
     def __init__(self, workspace_path: Path = None):
@@ -11,14 +30,12 @@ class FileManager:
         logger.info(f"FileManager initialized with workspace: {self.workspace}")
 
     def _resolve_and_check_path(self, relative_path: str) -> Path:
-        """Resolves path and prevents directory traversal."""
-        try:
-            target_path = (self.workspace / relative_path).resolve()
-            if not target_path.is_relative_to(self.workspace):
-                raise FileOperationError(f"Path traversal attempt detected: {relative_path}")
-            return target_path
-        except Exception as e:
-            raise FileOperationError(f"Invalid path provided: {relative_path} - {str(e)}")
+        """Resolve the path inside the workspace jail (Phase 5).
+
+        Delegates to the shared jail helper so traversal/absolute escapes are
+        rejected with a clear error rather than clamped.
+        """
+        return assert_within_workspace(self.workspace, relative_path)
 
     async def read_file(self, path: str) -> str:
         target = self._resolve_and_check_path(path)

@@ -48,15 +48,25 @@ The schema MUST strictly be:
 {{
   "operations": [
     {{
-      "type": "create_file" | "update_file" | "delete_file",
+      "type": "create_file" | "update_file" | "delete_file" | "search_replace",
       "path": "path/relative/to/workspace",
-      "content": "Full content of the file (required for create and update)"
+      "content": "Full file content (required for create_file and update_file)",
+      "search": "Exact text block to find (ONLY for search_replace; must match the file EXACTLY ONCE)",
+      "replace": "Replacement text (ONLY for search_replace)"
     }}
   ],
   "commands": [
     "command to run in terminal"
   ]
 }}
+
+Choosing the operation type:
+- Use "create_file" for brand-new files, and "update_file" (full content) for new files or large rewrites.
+- Prefer "search_replace" for small, targeted edits to LARGE existing files: instead of re-emitting the
+  whole file, provide a `search` block copied VERBATIM from the current file (include enough surrounding
+  lines to be UNIQUE) and the `replace` block. The `search` text must match the file content exactly once;
+  if it matches zero or multiple times the edit is rejected and you will be asked to correct it.
+- When unsure, fall back to "update_file" with the full content — it always works.
 
 Return ONLY valid JSON matching this schema. Do not include markdown formatting or explanations outside the JSON.
 """

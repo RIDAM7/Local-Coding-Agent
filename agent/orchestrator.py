@@ -3,14 +3,16 @@ from pathlib import Path
 from agent.llm.factory import build_client
 from agent.planner.core import Planner
 from agent.coder.core import Coder
-from agent.files.core import FileManager
+from agent.files.core import FileManager, apply_search_replace_text
 from agent.execution.core import Executor
+from agent.git.core import GitManager
+from agent.llm.pricing import estimate_cost
 from agent.reporting.core import Reporter
 from agent.retrieval import RipgrepSearch, TreeSitterIndexer, RepositoryMap, SymbolIndex, RetrievalManager
 from agent.validation import PatchValidator, BuildValidator, LintValidator, TestValidator
 from agent.repair import RollbackManager, RepairCoder, RepairManager, ConstraintExtractor, ConstraintValidator
 from agent.review.budget import BudgetManager
-from agent.models.schemas import Task, Report, Plan, RetrievedContext, ValidationReport, RepairResult, RepairMetrics, RepairPatch, RepairScope, RoutingCause, ExecutionOutcome, CommandExecution, ValidationDiagnostic
+from agent.models.schemas import Task, Report, Plan, RetrievedContext, ValidationReport, RepairResult, RepairMetrics, RepairPatch, RepairScope, RoutingCause, ExecutionOutcome, CommandExecution, ValidationDiagnostic, RoleUsage, CostSummary
 from agent.exceptions.errors import AgentError, ExecutionError
 from agent.config import settings, logger
 from agent.review.confidence import ConfidenceEngine
@@ -20,21 +22,30 @@ from agent.reviewers.claude_reviewer import ClaudeReviewer
 from agent.review.arbitration import Arbitrator
 from agent.reflection.manager import ReflectionManager
 from agent.reflection.schemas import ReflectionResult
+from agent.safety.controller import SafetyController, SafetyMode
 
 class Orchestrator:
-    def __init__(self, workspace_path: Path = None, reports_dir: Path = None, memory_manager=None, reflection_enabled: bool = True, shadow_reflection: bool = False, claude_enabled: bool = True, claude_always_on: bool = False, budget_enforcement: bool = True):
+    def __init__(self, workspace_path: Path = None, reports_dir: Path = None, memory_manager=None, reflection_enabled: bool = True, shadow_reflection: bool = False, claude_enabled: bool = True, claude_always_on: bool = False, budget_enforcement: bool = True, safety_mode: SafetyMode = None, safety_controller: SafetyController = None):
         ws_path = workspace_path if workspace_path else settings.get_workspace_path()
         self.reflection_enabled = reflection_enabled
         self.shadow_reflection = shadow_reflection
         self.claude_enabled = claude_enabled
         self.claude_always_on = claude_always_on
         self.memory_manager = memory_manager
+        # Phase 5: safety controls. The CLI (main.py) builds an interactive
+        # controller from --yes/--dry-run. For programmatic/test construction the
+        # default auto-approves confirmation prompts (so no run hangs on stdin) —
+        # the hard denylist and workspace jail still apply regardless.
+        self.safety = safety_controller or SafetyController(safety_mode or SafetyMode(auto_approve=True))
         # Phase 1: each role gets its own client from the factory. In default env
         # every role resolves to a local Ollama client with that role's model.
         self.planner = Planner(build_client("planner"))
         self.coder = Coder(build_client("coder"))
         self.file_manager = FileManager(ws_path)
-        self.executor = Executor(ws_path)
+        self.executor = Executor(ws_path, dry_run=self.safety.mode.dry_run)
+        # Phase 7B: git integration (gated; only acts when GIT_INTEGRATION is on and
+        # the workspace is a git repo and not in --dry-run).
+        self.git_manager = GitManager(ws_path)
         self.reporter = Reporter(reports_dir)
         
         # Retrieval components
@@ -78,11 +89,13 @@ class Orchestrator:
         # so a run is never blocked. When REFINER_ENABLED is false (default) this
         # whole block is skipped and the path is byte-for-byte the old one.
         refinement = None
+        refiner_usage = None
         if settings.refiner_enabled:
             try:
                 from agent.refiner.core import PromptRefiner
                 refiner = PromptRefiner(build_client("refiner"))
                 refinement = await refiner.refine(task_description)
+                refiner_usage = getattr(refiner, "last_usage", None)
                 refined_desc = refinement.refined_task
                 if refinement.acceptance_criteria:
                     refined_desc += "\n\nAcceptance Criteria:\n" + "\n".join(
@@ -93,6 +106,24 @@ class Orchestrator:
             except Exception as e:
                 logger.warning(f"Prompt refiner failed; falling back to raw prompt: {e}")
                 refinement = None
+
+        # Phase 7B: git integration — create a task branch at run start (only when
+        # GIT_INTEGRATION is on, the workspace is a git repo, and not a dry-run).
+        # Non-git workspaces fall back to today's snapshot-only behavior.
+        git_branch = None
+        git_commit = None
+        git_active = (
+            settings.git_integration
+            and not self.safety.mode.dry_run
+            and self.git_manager.is_git_repo()
+        )
+        if git_active:
+            try:
+                git_branch = self.git_manager.create_task_branch(original_task.description)
+                logger.info(f"Git: created task branch '{git_branch}'.")
+            except Exception as e:
+                logger.warning(f"Git: could not create task branch, continuing without it: {e}")
+                git_active = False
 
         # Phase 5.1: Memory Retrieval During Planning
         active_fingerprint = []
@@ -133,6 +164,7 @@ class Orchestrator:
         files_modified = []
         commands_executed = []
         proposed_commands = []
+        blocked_commands = []
         execution_results = ""
         final_status = "FAILURE"
         
@@ -268,12 +300,37 @@ class Orchestrator:
                                 logger.info("Applying patches...")
                                 for op in patch.operations:
                                     try:
+                                        # Phase 5: preview a unified diff and require
+                                        # confirmation before touching disk. Auto-approved
+                                        # under --yes; previewed-only (skipped) under
+                                        # --dry-run; declined ops are skipped.
+                                        # Phase 7A: search_replace edits a large file in
+                                        # place (old vs new computed via the exactly-once
+                                        # text helper) but applies through the SAME jail +
+                                        # diff-preview + dry-run + confirmation path.
+                                        if op.type in ("update_file", "search_replace"):
+                                            try:
+                                                old_content = await self.file_manager.read_file(op.path)
+                                            except Exception:
+                                                old_content = ""
+                                        else:
+                                            old_content = ""
+
+                                        if op.type == "search_replace":
+                                            new_content = apply_search_replace_text(old_content, op.search or "", op.replace or "")
+                                        else:
+                                            new_content = op.content or ""
+
+                                        if not self.safety.confirm_file_op(op.type, op.path, old_content, new_content):
+                                            logger.info(f"File op skipped by safety controls: {op.type} {op.path}")
+                                            continue
+
                                         if op.type == "create_file":
-                                            await self.file_manager.create_file(op.path, op.content or "")
+                                            await self.file_manager.create_file(op.path, new_content)
                                             files_modified.append(op.path)
                                             self.rollback_manager.track_new_file(op.path)
-                                        elif op.type == "update_file":
-                                            await self.file_manager.update_file(op.path, op.content or "")
+                                        elif op.type in ("update_file", "search_replace"):
+                                            await self.file_manager.update_file(op.path, new_content)
                                             files_modified.append(op.path)
                                     except Exception as e:
                                         logger.error(f"Failed to apply patch operation: {e}")
@@ -298,6 +355,17 @@ class Orchestrator:
                                 if proposed_commands and settings.execute_commands:
                                     first_failed_cmd = None
                                     for cmd in proposed_commands:
+                                        # Phase 5: route every command through safety.
+                                        # Denylisted -> blocked (never runs). dry-run /
+                                        # user-declined -> not executed (not a failure,
+                                        # so they don't feed the repair loop).
+                                        verdict = self.safety.check_command(cmd)
+                                        if verdict.status == "blocked":
+                                            blocked_commands.append(cmd)
+                                            continue
+                                        if not verdict.allowed:
+                                            logger.info(f"Command not executed ({verdict.status}): {cmd}")
+                                            continue
                                         try:
                                             cmd_result = await self.executor.run_command(cmd)
                                         except ExecutionError as e:
@@ -495,17 +563,61 @@ class Orchestrator:
             for res in context.results:
                 retrieved_symbols.extend(list(set([sym.name for sym in res.matched_symbols])))
                 
-        # Collect per-role LLM token usage for this run (foundation for Phase 7
-        # cost telemetry). Not yet surfaced in the Report schema; recorded on the
-        # orchestrator and logged. No secrets — provider/model/token counts only.
-        self.llm_usages = [
-            c.last_usage
-            for c in (self.planner, self.coder, self.constraint_extractor,
-                      self.repair_coder, self.reflection_manager)
-            if getattr(c, "last_usage", None) is not None
+        # Phase 7C: aggregate per-role LLM usage into a cost summary. est_cost is
+        # computed from the price table (cloud) / 0.0 (local). No secrets — only
+        # provider/model/token counts. The cloud spend is also fed to the budget
+        # manager for accounting (existing gating thresholds are unchanged).
+        role_clients = [
+            ("planner", self.planner),
+            ("coder", self.coder),
+            ("constraint", self.constraint_extractor),
+            ("repair", self.repair_coder),
+            ("reflection", self.reflection_manager),
         ]
+        role_usages = []
+        if refiner_usage is not None:
+            role_usages.append(("refiner", refiner_usage))
+        for role, client in role_clients:
+            usage = getattr(client, "last_usage", None)
+            if usage is not None:
+                role_usages.append((role, usage))
+
+        per_role = []
+        for role, usage in role_usages:
+            usage.est_cost = estimate_cost(usage.provider, usage.model,
+                                           usage.input_tokens, usage.output_tokens)
+            per_role.append(RoleUsage(
+                role=role, provider=usage.provider, model=usage.model,
+                input_tokens=usage.input_tokens, output_tokens=usage.output_tokens,
+                est_cost=usage.est_cost,
+            ))
+        cost_summary = CostSummary(
+            per_role=per_role,
+            total_input_tokens=sum(r.input_tokens for r in per_role),
+            total_output_tokens=sum(r.output_tokens for r in per_role),
+            total_est_cost=round(sum(r.est_cost for r in per_role), 6),
+        )
+        self.llm_usages = [u for _, u in role_usages]
+        if cost_summary.total_est_cost:
+            self.budget_manager.add_cost(cost_summary.total_est_cost)
         if self.llm_usages:
             logger.debug(f"LLM usage this run: {self.llm_usages}")
+
+        # Phase 7B: on a successful run commit the applied changes (redacted message);
+        # on failure use the complementary git rollback. Never in --dry-run.
+        if git_active:
+            try:
+                if final_status == "SUCCESS":
+                    summary_line = (original_task.description or "").strip().splitlines()
+                    summary_line = summary_line[0][:72] if summary_line else "automated change"
+                    git_commit = self.git_manager.commit_all(f"localcli: {summary_line}")
+                    if git_commit:
+                        logger.info(f"Git: committed changes as {git_commit[:10]} on '{git_branch}'.")
+                else:
+                    self.git_manager.rollback()
+                    logger.info("Git: rolled back working tree (complementing snapshot rollback).")
+            except Exception as e:
+                logger.warning(f"Git: post-run operation failed: {e}")
 
         report = Report(
             task=task.description,
@@ -518,6 +630,10 @@ class Orchestrator:
             files_modified=list(set(files_modified)),
             commands_executed=commands_executed,
             proposed_commands=proposed_commands,
+            blocked_commands=blocked_commands,
+            cost_summary=cost_summary if 'cost_summary' in locals() else None,
+            git_branch=git_branch if 'git_branch' in locals() else None,
+            git_commit=git_commit if 'git_commit' in locals() else None,
             execution_results=execution_results,
             final_status=final_status,
             routing_cause=routing_cause,
