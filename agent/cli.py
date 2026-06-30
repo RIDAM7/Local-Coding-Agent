@@ -30,7 +30,7 @@ ROLES = ["planner", "coder", "refiner", "repair", "constraint", "reflection", "r
 
 # Subcommands argparse owns; anything else as the first token is treated as a
 # bare-task shorthand for `run`.
-KNOWN_SUBCOMMANDS = {"run", "config", "models", "index", "search", "symbols"}
+KNOWN_SUBCOMMANDS = {"run", "config", "models", "index", "search", "symbols", "context"}
 
 
 # --- Routing table -----------------------------------------------------------
@@ -142,7 +142,46 @@ async def cmd_run(args):
         return 1
 
     _ensure_index(orchestrator)
-    report_path = await orchestrator.run(task_description)
+
+    # Phase 10: resolve the execution strategy. `pipeline` is byte-for-byte the
+    # Round 1 path (orchestrator.run unchanged); `agent` runs the governed loop.
+    from agent.engine.selector import resolve_mode, build_engine
+    mode, caps = await resolve_mode()
+    print(f"Execution mode: {mode}" + (f" (auto via capabilities: {caps.source})" if caps else ""))
+
+    if mode == "agent":
+        from agent.state.agent_state import AgentState, TaskMetadata
+        from agent.context import build_context_bundle
+        state = AgentState(user_request=task_description,
+                           task=TaskMetadata(description=task_description))
+        try:
+            state.loaded_context = await build_context_bundle(settings.get_workspace_path())
+        except Exception:
+            pass
+        if caps:
+            state.capabilities = caps.model_dump()
+        # Phase 11: incremental planning is on by default (settings); the agent
+        # loop then runs plan -> execute step -> observe -> replan.
+        engine = build_engine("agent", safety_mode=safety_mode,
+                              memory_manager=orchestrator.memory_manager,
+                              incremental=settings.incremental_planning)
+        state = await engine.execute(state)
+        print(f"\nAgent run complete: status={state.final_outputs.status}, "
+              f"confidence={state.confidence}, steps={state.governor.steps_used}, "
+              f"stop={state.governor.stop_reason}")
+        print(f"Files modified: {[f.path for f in state.files_modified] or 'none'}")
+        if settings.incremental_planning and state.plan.revisions:
+            from agent.planning import render_plan_evolution
+            print("\n" + render_plan_evolution(state))
+        return 0
+
+    # Phase 11: pipeline strategy with step-wise execution + replanning when
+    # INCREMENTAL_PLANNING is on. When off, orchestrator.run is byte-for-byte the
+    # Round 1 plan-once-execute-all path (parity).
+    if settings.incremental_planning:
+        report_path = await orchestrator.run_incremental(task_description)
+    else:
+        report_path = await orchestrator.run(task_description)
     print(f"\nExecution complete. Report generated at: {report_path}")
     return 0
 
@@ -157,6 +196,52 @@ def _ensure_index(orchestrator):
         orchestrator.retrieval_manager.repo_map.save(map_data, idx_dir)
     else:
         orchestrator.retrieval_manager.sym_idx.incremental_update(ws, idx_dir)
+
+
+async def cmd_context(args):
+    """Phase 9: generate/refresh the repository Context Bundle and print a summary.
+
+    100% local. Uses the local planner model for the architecture summary when
+    reachable, and degrades gracefully to a machine-only bundle otherwise.
+    """
+    from agent.context import ContextEngine
+
+    if not settings.context_engine_enabled:
+        print("Context engine is disabled (CONTEXT_ENGINE_ENABLED=false).")
+        return 0
+
+    engine = ContextEngine(settings.get_workspace_path())
+    # The architecture summary uses the local planner model; if it is None or
+    # unreachable, the bundle is still produced (machine-only).
+    llm = None
+    try:
+        from agent.llm.factory import build_client
+        llm = build_client("planner")
+    except Exception:
+        llm = None
+
+    print(f"Scanning workspace: {settings.workspace_dir}")
+    bundle = await engine.build(force=args.refresh, llm_client=llm)
+
+    print("\nRepository Context")
+    print("-" * 52)
+    print(f"Files scanned   : {bundle.file_count}")
+    print(f"Symbols indexed : {bundle.symbol_count}")
+    if bundle.tech_stack:
+        print(f"Ecosystems      : {', '.join(sorted({t.ecosystem for t in bundle.tech_stack}))}")
+    if bundle.frameworks:
+        print(f"Frameworks      : {', '.join(bundle.frameworks)}")
+    if bundle.entry_points:
+        eps = ", ".join(f"{e.kind}:{e.target}" for e in bundle.entry_points[:6])
+        print(f"Entry points    : {eps}")
+    if bundle.conventions.primary_language:
+        print(f"Primary language: {bundle.conventions.primary_language}")
+    if bundle.conventions.test_layout:
+        print(f"Test layout     : {bundle.conventions.test_layout}")
+    print(f"Architecture    : {'LLM summary' if bundle.architecture_summary else 'machine-only (no LLM)'}")
+    print(f"\nCached at: {engine.context_dir}")
+    print("  repo_context.json, architecture.md, conventions.md, dependency_graph.json")
+    return 0
 
 
 async def cmd_index(args):
@@ -228,6 +313,9 @@ def build_parser():
 
     sub.add_parser("symbols", help="Print parsed Tree-sitter symbols")
 
+    p_context = sub.add_parser("context", help="Generate/refresh the repository Context Bundle (Phase 9, local)")
+    p_context.add_argument("--refresh", action="store_true", help="Force a full rescan, ignoring the cache")
+
     p_config = sub.add_parser("config", help="Configuration utilities")
     config_sub = p_config.add_subparsers(dest="config_action")
     config_sub.add_parser("check", help="Run preflight and print the resolved routing table + health")
@@ -261,6 +349,8 @@ async def _dispatch(args):
         return await cmd_search(args)
     if args.subcommand == "symbols":
         return await cmd_symbols(args)
+    if args.subcommand == "context":
+        return await cmd_context(args)
     # default: run
     return await cmd_run(args)
 

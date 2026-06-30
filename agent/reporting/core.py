@@ -1,6 +1,6 @@
 from pathlib import Path
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from agent.models.schemas import Report
 from agent.config import logger
 from agent.safety.redact import redact
@@ -10,10 +10,10 @@ class Reporter:
         self.reports_dir = str(reports_dir) if reports_dir else "reports"
         os.makedirs(self.reports_dir, exist_ok=True)
 
-    def generate_report(self, report: Report, constraints: list = None, repair_scope = None, rollback_results: dict = None, refinement = None, raw_task: str = None) -> str:
+    def generate_report(self, report: Report, constraints: list = None, repair_scope = None, rollback_results: dict = None, refinement = None, raw_task: str = None, plan_evolution: str = None) -> str:
         logger.info("Generating markdown report...")
         
-        report_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        report_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         filepath = os.path.join(self.reports_dir, f"report_{report_id}.md")
         json_filepath = os.path.join(self.reports_dir, f"report_{report_id}.json")
         
@@ -69,8 +69,15 @@ class Reporter:
             for step in report.plan.steps:
                 content.append(f"{step.id}. {step.description}\n   *Expected Output:* {step.expected_output}\n")
             content.append("\n")
-            
-        content.append(f"## Retrieved Context\n")
+
+        # Phase 11: incremental planning — show the plan evolution (original plan
+        # -> revisions). Only present when the incremental path ran; the Round 1
+        # report is byte-for-byte unchanged when this is None.
+        if plan_evolution:
+            content.append(plan_evolution)
+            content.append("\n\n")
+
+        content.append("## Retrieved Context\n")
         if report.retrieved_files:
             content.append("**Files:**\n")
             for f in report.retrieved_files:
@@ -115,7 +122,7 @@ class Reporter:
                     
         if report.repair_metrics and report.repair_metrics.total_attempts > 0:
             rm = report.repair_metrics
-            content.append(f"## Repair Summary\n")
+            content.append("## Repair Summary\n")
             content.append(f"**Total Attempts:** {rm.total_attempts}\n")
             content.append(f"**Resolved In Attempt:** {rm.resolved_in_attempt if rm.resolved_in_attempt else 'N/A'}\n")
             content.append(f"**Rollback Triggered:** {rm.rollback_triggered}\n\n")
@@ -128,7 +135,7 @@ class Reporter:
                     content.append(f"**Explanation:** {result.patch_applied.explanation}\n")
                 content.append(f"**Outcome:** {'SUCCESS' if result.success else 'FAILED'}\n\n")
             
-        content.append(f"## Files Modified\n")
+        content.append("## Files Modified\n")
         if report.files_modified:
             for f in report.files_modified:
                 content.append(f"- {f}\n")
@@ -136,7 +143,7 @@ class Reporter:
             content.append("No files modified.\n")
         content.append("\n")
         
-        content.append(f"## Commands\n")
+        content.append("## Commands\n")
         if report.commands_executed:
             content.append("**Executed:**\n\n")
             for cmd in report.commands_executed:

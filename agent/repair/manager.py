@@ -1,7 +1,6 @@
 import hashlib
-import json
-from typing import List, Optional
-from agent.models.schemas import ValidationReport, RepairResult, RepairContext, RepairPatch, Task, Plan, RetrievedContext, RepairScope
+from typing import Optional
+from agent.models.schemas import ValidationReport, RepairContext, RepairPatch, Task, Plan, RepairScope
 from agent.retrieval.retrieval_manager import RetrievalManager
 from agent.repair.normalizer import DiagnosticsNormalizer
 from agent.repair.coder import RepairCoder

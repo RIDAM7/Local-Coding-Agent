@@ -1,5 +1,5 @@
 import logging
-from typing import Optional, List, Any
+from typing import Optional, Any
 from agent.models.schemas import ArbitrationReport, ArbitrationDecision, ArbitrationReason, ValidationReport
 from agent.review.schemas import ConfidenceReport
 from agent.reflection.schemas import ReflectionReport, ReflectionResult

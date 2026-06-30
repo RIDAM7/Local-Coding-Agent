@@ -1,6 +1,5 @@
 import pytest
 import asyncio
-import os
 import json
 from pathlib import Path
 from agent.evaluation.arbitration_benchmark import ArbitrationBenchmarkRunner

@@ -1,5 +1,4 @@
 import os
-from agent.config import settings
 
 class BudgetManager:
     def __init__(self, enforcement_enabled: bool = True):

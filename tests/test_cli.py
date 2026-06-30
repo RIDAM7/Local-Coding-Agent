@@ -2,7 +2,6 @@
 
 from unittest.mock import AsyncMock
 
-import pytest
 
 from agent import cli
 from agent.cli import build_parser, _normalize_argv, main, ROLES

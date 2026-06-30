@@ -44,7 +44,7 @@ class CommandExecution(BaseModel):
 # Retrieval Schemas
 class Symbol(BaseModel):
     name: str
-    type: Literal["class", "function", "method", "interface", "export"]
+    type: Literal["class", "function", "method", "interface", "export", "struct", "enum", "trait"]
     file: str
     line_start: int
     line_end: int

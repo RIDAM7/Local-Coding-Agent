@@ -5,7 +5,6 @@ from pathlib import Path
 
 from agent.evaluation.schemas import BenchmarkTask
 from agent.evaluation.runner import BenchmarkRunner
-from agent.evaluation.reflection_schemas import ReflectionOutcome, ReflectionAccuracyReport, CategoryAccuracy
 
 async def run_reflection_analysis(suite_path: str):
     suite_path = Path(suite_path)

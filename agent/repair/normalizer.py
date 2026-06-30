@@ -1,5 +1,5 @@
 import re
-from typing import List, Tuple
+from typing import Tuple
 from agent.models.schemas import ValidationReport, StructuredDiagnostics, NormalizedDiagnostic
 from agent.repair.classifier import FailureClassifier
 

@@ -30,13 +30,42 @@ dependencies = [
     "tree-sitter-python==0.21.0",
     "tree-sitter-javascript==0.21.4",
     "tree-sitter-typescript==0.21.2",
+    # Phase 8A: additional language grammars (Go / Rust / Java). Pinned to the
+    # tree-sitter 0.22.x-compatible releases. A missing/unloadable grammar is
+    # skipped gracefully at runtime, so these are convenience pins, not hard
+    # requirements for indexing the core (python/js/ts) languages.
+    "tree-sitter-go==0.21.0",
+    "tree-sitter-rust==0.21.2",
+    "tree-sitter-java==0.21.0",
 ]
 
 [project.optional-dependencies]
-# Test deps, installed-but-undeclared since Phase 1 — formalized here.
+# Test + lint deps, installed-but-undeclared since Phase 1 — formalized here.
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+# Generated/runtime artifacts and the venv are never linted.
+extend-exclude = ["workspace", "reports", "logs", "venv", ".venv"]
+
+[tool.ruff.lint]
+# Pyflakes (F) catches real bugs (unused imports, redefinitions); pycodestyle
+# E/W for obvious style. The rest are intentionally scoped out below to keep CI
+# green without a large stylistic rewrite of working modules.
+select = ["E", "F", "W"]
+ignore = [
+    "E501",  # line length — handled loosely; not worth churn here
+    "E701",  # multiple statements on one line (compact dispatch blocks)
+    "E722",  # bare except — used deliberately in fail-open guards
+    "E402",  # module import not at top — config.py loads settings before logging
+    "E741",  # ambiguous var names (pre-existing)
+    "W291",  # trailing whitespace — cosmetic, avoided to keep diffs surgical
+    "W293",  # blank line with whitespace — cosmetic, same reason
 ]
 
 [project.scripts]

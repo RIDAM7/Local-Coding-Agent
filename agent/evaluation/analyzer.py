@@ -2,12 +2,11 @@ import json
 import os
 from pathlib import Path
 from collections import defaultdict
-from typing import List, Dict, Any
+from typing import List
 
 from agent.evaluation.schemas import BenchmarkSuiteResult, BenchmarkResult
 from agent.evaluation.improvement_schemas import (
-    FailureAnalysis, Recommendation, HealthScore, AnalysisResult, HistoricalRun,
-    TaxonomyClassification, RootCauseAttribution
+    FailureAnalysis, Recommendation, HealthScore, AnalysisResult, HistoricalRun
 )
 
 class FailureAnalyzer:
@@ -279,9 +278,9 @@ class FailureAnalyzer:
 
     def generate_markdown(self, analysis: AnalysisResult, out_path: str):
         lines = [
-            f"# Phase 4.6 Improvement Analysis Report",
+            "# Phase 4.6 Improvement Analysis Report",
             f"**Agent Health Score:** {analysis.health_score.final_score}/100\n",
-            f"### Top Failures"
+            "### Top Failures"
         ]
         
         sorted_tax = sorted(analysis.taxonomy_counts.items(), key=lambda x: x[1], reverse=True)
@@ -293,11 +292,11 @@ class FailureAnalyzer:
                 pct = (count / max(total_fails, 1)) * 100
                 lines.append(f"- **{tax}** ({pct:.0f}%) - Count: {count}")
                 
-        lines.append(f"\n### Root Cause Attribution")
+        lines.append("\n### Root Cause Attribution")
         for rc, count in analysis.root_cause_counts.items():
              lines.append(f"- **{rc}**: {count}")
              
-        lines.append(f"\n### Architectural Recommendations")
+        lines.append("\n### Architectural Recommendations")
         for rec in analysis.recommendations:
             lines.append(f"- **{rec.severity}**: {rec.issue} -> *{rec.suggestion}*")
             

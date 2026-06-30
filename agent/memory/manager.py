@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 import aiohttp
-from datetime import datetime
+from datetime import datetime, timezone
 
 from agent.memory.schemas import MemoryRecord, MemoryType, MemoryMetadata, get_importance_score
 
@@ -207,7 +207,7 @@ class MemoryManager:
                     workspace_fingerprint=meta_fingerprint
                 )
                 
-                from agent.memory.schemas import get_importance_score, MemoryType
+                from agent.memory.schemas import MemoryType
                 try:
                     mem_type = MemoryType(meta.get("memory_type"))
                 except:
@@ -234,7 +234,7 @@ class MemoryManager:
                 self._update_stats("retrieve", "")
                 for r in final_records:
                     r.metadata.access_count += 1
-                    r.metadata.last_accessed = datetime.utcnow().isoformat()
+                    r.metadata.last_accessed = datetime.now(timezone.utc).isoformat()
                     try:
                         meta_dict = r.metadata.model_dump()
                         meta_dict["constraints"] = json.dumps(meta_dict["constraints"] or [])

@@ -1,5 +1,5 @@
-from typing import List, Optional, Dict, Literal
-from pydantic import BaseModel, Field
+from typing import List, Dict, Literal
+from pydantic import BaseModel
 
 TaxonomyClassification = Literal[
     "PLANNER_SCHEMA_ERROR",

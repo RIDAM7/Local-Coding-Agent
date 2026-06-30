@@ -1,7 +1,7 @@
 from enum import Enum
 from pydantic import BaseModel, Field
-from typing import Dict, Any, List, Optional
-from datetime import datetime
+from typing import List, Optional
+from datetime import datetime, timezone
 
 class MemoryType(str, Enum):
     REPAIR_SUCCESS = "REPAIR_SUCCESS"
@@ -16,7 +16,7 @@ class MemoryMetadata(BaseModel):
     constraints: List[str] = []
     patch_summary: str = ""
     outcome: str = ""
-    timestamp: str = Field(default_factory=lambda: datetime.utcnow().strftime("%Y%m%d_%H%M%S"))
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"))
     source_id: str
     access_count: int = 0
     last_accessed: Optional[str] = None

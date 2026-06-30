@@ -6,7 +6,7 @@ from typing import List, Dict
 from agent.retrieval.tree_sitter_indexer import TreeSitterIndexer
 from agent.models.schemas import Symbol, IndexMetadata
 from agent.config import logger
-from datetime import datetime
+from datetime import datetime, timezone
 
 class SymbolIndex:
     def __init__(self, indexer: TreeSitterIndexer):
@@ -147,7 +147,7 @@ class SymbolIndex:
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             meta = IndexMetadata(
-                last_indexed=datetime.utcnow().isoformat(),
+                last_indexed=datetime.now(timezone.utc).isoformat(),
                 total_files_indexed=len(file_hashes),
                 file_hashes=file_hashes
             )

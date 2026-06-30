@@ -1,5 +1,4 @@
 import os
-import json
 from pathlib import Path
 from agent.evaluation.schemas import BenchmarkSuiteResult, BenchmarkComparison
 
@@ -25,7 +24,7 @@ class BenchmarkReporter:
         lines = [
             f"# Benchmark Suite: {suite_result.suite_name}",
             f"**Timestamp:** {suite_result.timestamp}",
-            f"\n## Summary Metrics",
+            "\n## Summary Metrics",
             f"- **Tasks Run:** {suite_result.total_tasks}",
             f"- **Success Rate:** {suite_result.success_rate * 100:.1f}%",
             f"- **Repair Trigger Rate:** {suite_result.repair_trigger_rate * 100:.1f}%",
@@ -33,7 +32,7 @@ class BenchmarkReporter:
             f"- **Rollback Rate:** {suite_result.rollback_rate * 100:.1f}%",
             f"- **Constraint Violations Prevented:** {suite_result.total_constraint_violations}",
             f"- **Average Runtime:** {suite_result.avg_execution_time:.2f}s",
-            f"\n## Individual Results"
+            "\n## Individual Results"
         ]
         
         for r in suite_result.results:
@@ -42,7 +41,7 @@ class BenchmarkReporter:
             lines.append(f"- Execution Time: {r.execution_time:.2f}s")
             lines.append(f"- Repair Triggered: {r.repair_triggered} (Attempts: {r.repair_attempts})")
             if r.rollback_triggered:
-                lines.append(f"- Rollback Triggered: True")
+                lines.append("- Rollback Triggered: True")
             if r.constraint_violations > 0:
                 lines.append(f"- Constraint Violations: {r.constraint_violations}")
             if r.error_message:

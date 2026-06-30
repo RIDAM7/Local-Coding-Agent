@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from agent.llm.factory import build_client
 from agent.planner.core import Planner
@@ -12,7 +12,7 @@ from agent.retrieval import RipgrepSearch, TreeSitterIndexer, RepositoryMap, Sym
 from agent.validation import PatchValidator, BuildValidator, LintValidator, TestValidator
 from agent.repair import RollbackManager, RepairCoder, RepairManager, ConstraintExtractor, ConstraintValidator
 from agent.review.budget import BudgetManager
-from agent.models.schemas import Task, Report, Plan, RetrievedContext, ValidationReport, RepairResult, RepairMetrics, RepairPatch, RepairScope, RoutingCause, ExecutionOutcome, CommandExecution, ValidationDiagnostic, RoleUsage, CostSummary
+from agent.models.schemas import Task, Report, ValidationReport, RepairResult, RepairMetrics, RepairPatch, RepairScope, RoutingCause, ExecutionOutcome, CommandExecution, ValidationDiagnostic, RoleUsage, CostSummary
 from agent.exceptions.errors import AgentError, ExecutionError
 from agent.config import settings, logger
 from agent.review.confidence import ConfidenceEngine
@@ -176,8 +176,22 @@ class Orchestrator:
                 return msg
                 
             constraints = extraction_res.constraints
-            
-            plan = await self.planner.create_plan(task)
+
+            # Phase 9: build/load the repository Context Bundle (local, cached) and
+            # inject it into the planner prompt. When CONTEXT_ENGINE_ENABLED is
+            # false, build_context_bundle() returns None and create_plan() gets no
+            # bundle, so the planner prompt is byte-for-byte the Round 1 path
+            # (pipeline parity). Fail-open: any error continues without context.
+            # No LLM is passed here (machine-only / cache reuse) to avoid an extra
+            # mid-run model call; `localcli context` builds the richer summary.
+            context_bundle = None
+            try:
+                from agent.context import build_context_bundle
+                context_bundle = await build_context_bundle(self.file_manager.workspace)
+            except Exception as e:
+                logger.warning(f"Context engine failed; continuing without it: {e}")
+
+            plan = await self.planner.create_plan(task, context_bundle)
             context = await self.retrieval_manager.search_context(task_description, plan)
             
             MAX_CLAUDE_REPAIR_CYCLES = 1
@@ -638,7 +652,7 @@ class Orchestrator:
             final_status=final_status,
             routing_cause=routing_cause,
             execution_outcome=execution_outcome,
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(timezone.utc).isoformat(),
             confidence_report=confidence_report if 'confidence_report' in locals() else None,
             review_decision=review_decision.value if 'review_decision' in locals() else None,
             reflection_report=reflection_report if 'reflection_report' in locals() else None,
@@ -655,5 +669,136 @@ class Orchestrator:
         
         report_path = self.reporter.generate_report(report, constraints=constraints if 'constraints' in locals() else [], repair_scope=repair_scope if 'repair_scope' in locals() else None, rollback_results=rollback_results if 'rollback_results' in locals() else {}, refinement=refinement, raw_task=original_task.description)
         logger.info(f"Task finished with status {final_status}. Report: {report_path}")
-        
+
         return report_path
+
+    # --- Phase 11: incremental planning (opt-in; pipeline strategy) ----------
+
+    async def run_incremental(self, task_description: str) -> str:
+        """Pipeline strategy with step-wise execution + replanning.
+
+        This is the pipeline's incremental path: plan -> execute step -> observe
+        -> replan, driven by the shared :class:`IncrementalPlanner` over an
+        :class:`AgentState`. It REUSES this orchestrator's existing Round 1
+        components (planner, coder, patch validator, validators, file manager,
+        safety) — nothing is reimplemented. The default ``run()`` above is left
+        byte-for-byte unchanged, so ``INCREMENTAL_PLANNING=false`` is exact parity.
+        """
+        from agent.state.agent_state import AgentState, TaskMetadata
+        from agent.planning import IncrementalPlanner, Replanner, StepPlanner, render_plan_evolution
+        from agent.engine.governor import Governor
+
+        logger.info(f"Starting incremental (step-wise) task: {task_description}")
+        state = AgentState(user_request=task_description,
+                           task=TaskMetadata(description=task_description),
+                           execution_mode="pipeline")
+        governor = Governor.configure(state)
+
+        # Constraints + context, reusing Round 1 components.
+        try:
+            extraction_res = await self.constraint_extractor.extract(task_description)
+            constraints = extraction_res.constraints if extraction_res.success else []
+        except Exception as e:
+            logger.warning(f"Incremental: constraint extraction failed, continuing: {e}")
+            constraints = []
+
+        context_bundle = None
+        try:
+            from agent.context import build_context_bundle
+            context_bundle = await build_context_bundle(self.file_manager.workspace)
+        except Exception as e:
+            logger.warning(f"Incremental: context engine failed, continuing: {e}")
+
+        # Plan once (reuse the Round 1 planner); the plan lives inside AgentState.
+        plan = await self.planner.create_plan(Task(description=task_description), context_bundle)
+        context = await self.retrieval_manager.search_context(task_description, plan)
+
+        async def step_executor(st, step):
+            return await self._execute_pipeline_step(st, step, plan=plan, context=context,
+                                                     constraints=constraints)
+
+        inc = IncrementalPlanner(
+            step_planner=StepPlanner(planner=self.planner),
+            replanner=Replanner(client=self.planner.llm_client) if settings.replan_on_failure else None,
+        )
+        await inc.run(state, step_executor, governor=governor, plan=plan,
+                      context_bundle=context_bundle)
+
+        final_status = state.final_outputs.status
+        retrieved_files = [res.file for res in context.results] if context else []
+        report = Report(
+            task=task_description,
+            plan=plan,
+            retrieved_files=retrieved_files,
+            files_modified=[fc.path for fc in state.files_modified],
+            execution_results=state.final_outputs.summary,
+            final_status=final_status,
+            execution_outcome=ExecutionOutcome.SUCCESS if final_status == "SUCCESS" else ExecutionOutcome.FAILURE,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        report_path = self.reporter.generate_report(
+            report, constraints=constraints,
+            plan_evolution=render_plan_evolution(state))
+        logger.info(f"Incremental task finished with status {final_status}. Report: {report_path}")
+        return report_path
+
+    async def _execute_pipeline_step(self, state, step, *, plan, context, constraints):
+        """Execute ONE plan step via the Round 1 coder + validators (no per-step
+        repair loop — replanning handles failures). Appends validation signals to
+        the shared state for the Observer."""
+        from agent.state.agent_state import ValidationResult
+        from agent.planning.incremental import StepOutcome
+
+        step_task = Task(description=(
+            f"{state.user_request}\n\nFocus ONLY on this step:\n{step.description}\n"
+            f"Acceptance: {step.acceptance}"))
+        patch = await self.coder.generate_patch(step_task, plan, context)
+
+        patch_val = self.patch_validator.validate_and_repair(patch)
+        if not patch_val.is_valid:
+            state.validation_results.append(ValidationResult(
+                stage="PATCH", success=False, detail="; ".join(patch_val.errors)))
+            return StepOutcome(success=False, summary="patch validation failed")
+        patch = patch_val.modified_patch
+
+        if not patch.operations and not patch.commands:
+            return StepOutcome(success=True, summary="no-op step (nothing to change)")
+
+        for op in patch.operations:
+            try:
+                if op.type in ("update_file", "search_replace"):
+                    try:
+                        old_content = await self.file_manager.read_file(op.path)
+                    except Exception:
+                        old_content = ""
+                else:
+                    old_content = ""
+                if op.type == "search_replace":
+                    new_content = apply_search_replace_text(old_content, op.search or "", op.replace or "")
+                else:
+                    new_content = op.content or ""
+                if not self.safety.confirm_file_op(op.type, op.path, old_content, new_content):
+                    continue
+                if op.type == "create_file":
+                    await self.file_manager.create_file(op.path, new_content)
+                    state.record_file_change(op.path, op.type)
+                elif op.type in ("update_file", "search_replace"):
+                    await self.file_manager.update_file(op.path, new_content)
+                    state.record_file_change(op.path, op.type)
+                elif op.type == "delete_file":
+                    await self.file_manager.delete_file(op.path)
+                    state.record_file_change(op.path, op.type)
+            except Exception as e:
+                logger.error(f"Incremental: failed to apply op {op.type} {op.path}: {e}")
+                state.validation_results.append(ValidationResult(
+                    stage="PATCH", success=False, detail=f"apply failed: {e}"))
+                return StepOutcome(success=False, summary=f"apply failed: {e}")
+
+        build_res = await self.build_validator.validate()
+        lint_res = await self.lint_validator.validate()
+        test_res = await self.test_validator.validate()
+        for stage, res in (("BUILD", build_res), ("LINT", lint_res), ("TEST", test_res)):
+            state.validation_results.append(ValidationResult(
+                stage=stage, success=res.success, detail=res.stderr[:200] if not res.success else ""))
+        ok = build_res.success and lint_res.success and test_res.success
+        return StepOutcome(success=ok, summary="validated" if ok else "validation failed")

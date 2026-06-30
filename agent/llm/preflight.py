@@ -64,6 +64,20 @@ async def preflight_check(roles: list[str] | None = None) -> None:
             roles.append("refiner")
     problems: list[str] = []
 
+    # Phase 10 — Offline Lock: when OFFLINE_ONLY is true, reject ANY non-Ollama
+    # provider up front so "offline" is a verifiable guarantee, not a default.
+    if settings.offline_only:
+        offline_problems = [
+            f"role '{role}': OFFLINE_ONLY is set but provider is '{resolve_provider(role)}'. "
+            f"Only 'ollama' (local) is allowed offline."
+            for role in roles if resolve_provider(role) != "ollama"
+        ]
+        if offline_problems:
+            message = ("Preflight failed — OFFLINE_ONLY rejects remote providers:\n  - "
+                       + "\n  - ".join(offline_problems))
+            logger.error(message)
+            raise PreflightError(message)
+
     # Resolve once; only contact each distinct Ollama host a single time.
     ollama_cache: dict[str, list[str] | str] = {}
 

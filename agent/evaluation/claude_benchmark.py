@@ -289,7 +289,7 @@ async def run_claude_analysis(suite_path: str):
         print(f"Threshold {t}: Calls={d['claude_calls']}, Cost=${d['estimated_cost']:.4f}, CPI=${d['cost_per_successful_improvement']:.4f}")
     print("=============================================")
     print(f"Recommended Threshold: {eff_data['recommended_threshold']}")
-    print(f"Reports saved to benchmarks/results/")
+    print("Reports saved to benchmarks/results/")
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

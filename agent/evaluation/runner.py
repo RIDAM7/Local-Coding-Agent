@@ -47,10 +47,10 @@ class BenchmarkRunner:
         total_constraint_violations = sum(r.constraint_violations for r in results)
         avg_execution_time = sum(r.execution_time for r in results) / total
 
-        from datetime import datetime
+        from datetime import datetime, timezone
         suite_result = BenchmarkSuiteResult(
             suite_name=self.suite_name,
-            timestamp=datetime.utcnow().strftime("%Y%m%d_%H%M%S"),
+            timestamp=datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S"),
             total_tasks=total,
             success_rate=success_rate,
             repair_trigger_rate=repair_trigger_rate,

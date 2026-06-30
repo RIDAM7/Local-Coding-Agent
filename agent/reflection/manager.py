@@ -2,7 +2,6 @@ import time
 from typing import List, Any
 from agent.config import settings, logger
 from agent.reflection.schemas import ReflectionReport, ReflectionResult
-from agent.exceptions.errors import LLMError
 
 class ReflectionManager:
     def __init__(self, llm_client):

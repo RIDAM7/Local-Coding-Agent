@@ -1,5 +1,4 @@
 import os
-import json
 from pathlib import Path
 from agent.models.schemas import RepositoryMapData, RepositoryComponent
 from agent.config import logger

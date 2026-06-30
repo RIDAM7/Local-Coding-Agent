@@ -59,7 +59,9 @@ fast with a clear, secret-free message. API keys are never logged or written to 
 - **Optional prompt refiner** — rewrites a raw task into a structured instruction (clarified goal,
   assumptions, acceptance criteria) before planning; off by default and fails open to the raw prompt.
 - **Retrieval layer** — indexes the repo (symbols, components) with Ripgrep + Tree-sitter to feed the
-  coder precise context instead of the whole repo.
+  coder precise context instead of the whole repo. Languages indexed: Python, JavaScript/JSX,
+  TypeScript/TSX, **Go, Rust, and Java** (functions, methods, classes, structs, enums, traits,
+  interfaces). A missing optional grammar is skipped gracefully rather than crashing indexing.
 - **Reflection** — a self-critique pass (up to two) that can regenerate a patch before it is applied.
 - **Validation + self-healing repair** — runs build/lint/test, classifies failures, retrieves
   error-relevant context, generates repair patches, and rolls back if it exceeds the attempt budget.
@@ -73,7 +75,7 @@ fast with a clear, secret-free message. API keys are never logged or written to 
 
 ## Requirements
 
-- Python 3.12+
+- Python 3.10+
 - [Ollama](https://ollama.com/) running locally (for the default local setup)
 - [`rg` (Ripgrep)](https://github.com/BurntSushi/ripgrep) installed and on your `PATH`
 
@@ -122,15 +124,87 @@ fast with a clear, secret-free message. API keys are never logged or written to 
    ollama pull qwen2.5-coder:32b
    ```
 
-### Using a cloud model for a role (optional)
+## Provider `.env` recipes (copy-paste)
+
+Every role independently resolves a provider + model, so you can mix any of these freely (e.g. a
+local planner with a cloud coder). Set only the roles you want to move off local; unset roles stay on
+Ollama. Secrets below are placeholders — never commit real keys. Credentials are only required for a
+provider a role actually uses.
+
+### Fully local (Ollama) — the default, no keys, no network
 
 ```env
-# Local planner, cloud coder via OpenRouter (an OpenAI-compatible gateway):
-CODER_PROVIDER=openai
-CODER_MODEL=anthropic/claude-3.5-sonnet
-OPENAI_BASE_URL=https://openrouter.ai/api/v1
-OPENAI_API_KEY=sk-...
+PLANNER_PROVIDER=ollama
+PLANNER_MODEL=qwen2.5:14b
+CODER_PROVIDER=ollama
+CODER_MODEL=qwen2.5-coder:32b
+OLLAMA_BASE_URL=http://localhost:11434
 ```
+
+### OpenAI
+
+```env
+PLANNER_PROVIDER=openai
+PLANNER_MODEL=gpt-4o-mini
+CODER_PROVIDER=openai
+CODER_MODEL=gpt-4o
+OPENAI_API_KEY=sk-...
+OPENAI_BASE_URL=https://api.openai.com/v1
+```
+
+### OpenRouter (OpenAI-compatible — hundreds of models via one gateway)
+
+```env
+PLANNER_PROVIDER=openai
+PLANNER_MODEL=anthropic/claude-3.5-sonnet
+CODER_PROVIDER=openai
+CODER_MODEL=qwen/qwen-2.5-coder-32b-instruct
+OPENAI_API_KEY=sk-or-...
+OPENAI_BASE_URL=https://openrouter.ai/api/v1
+```
+
+### Groq (OpenAI-compatible)
+
+```env
+PLANNER_PROVIDER=openai
+PLANNER_MODEL=llama-3.3-70b-versatile
+CODER_PROVIDER=openai
+CODER_MODEL=llama-3.3-70b-versatile
+OPENAI_API_KEY=gsk_...
+OPENAI_BASE_URL=https://api.groq.com/openai/v1
+```
+
+### Anthropic
+
+```env
+PLANNER_PROVIDER=anthropic
+PLANNER_MODEL=claude-3-5-sonnet-20240620
+CODER_PROVIDER=anthropic
+CODER_MODEL=claude-3-5-sonnet-20240620
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+### Google Gemini
+
+```env
+PLANNER_PROVIDER=google
+PLANNER_MODEL=gemini-1.5-pro
+CODER_PROVIDER=google
+CODER_MODEL=gemini-1.5-flash
+GOOGLE_API_KEY=AIza...
+```
+
+> **Mix-and-match example** — local planner, cloud coder via OpenRouter (leave `PLANNER_*` on Ollama
+> and only point the coder at the gateway):
+>
+> ```env
+> CODER_PROVIDER=openai
+> CODER_MODEL=anthropic/claude-3.5-sonnet
+> OPENAI_BASE_URL=https://openrouter.ai/api/v1
+> OPENAI_API_KEY=sk-or-...
+> ```
+
+Run `localcli config check` after editing `.env` to verify routing + credentials before a task.
 
 ## CLI usage
 

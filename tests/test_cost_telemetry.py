@@ -9,7 +9,7 @@ import pytest
 from agent.llm.pricing import estimate_cost, price_for
 from agent.llm.providers.base import Usage
 from agent.orchestrator import Orchestrator
-from agent.models.schemas import Plan, Patch, FileOperation, ValidationDiagnostic
+from agent.models.schemas import Plan, Patch, ValidationDiagnostic
 from agent.reflection.schemas import ReflectionReport, ReflectionResult
 from agent.review.router import ReviewDecision
 from agent.safety.controller import SafetyMode

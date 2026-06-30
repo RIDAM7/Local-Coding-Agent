@@ -1,5 +1,5 @@
 import os
-from typing import List, Dict, Set
+from typing import List, Dict
 from pathlib import Path
 
 from agent.models.schemas import Plan, RetrievedContext, RetrievalResult, Symbol, NormalizedDiagnostic

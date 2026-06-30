@@ -5,7 +5,7 @@ import hashlib
 import platform
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, Tuple, List
 
@@ -97,7 +97,7 @@ class ReplayManager:
         import math
         
         replay_id = f"replay_{task_id}_{uuid.uuid4().hex[:8]}"
-        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         
         archive_path = self.replays_dir / f"{replay_id}.tar.gz"
         hash_val, count = self._create_archive(workspace_path, archive_path)
@@ -215,7 +215,7 @@ class ReplayManager:
         artifact = ReplayArtifact(**data)
         if artifact.evolution_tracking:
             if not artifact.evolution_tracking.first_success_date:
-                artifact.evolution_tracking.first_success_date = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                artifact.evolution_tracking.first_success_date = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         
         with open(json_path, 'w', encoding='utf-8') as f:
             f.write(artifact.model_dump_json(indent=2))

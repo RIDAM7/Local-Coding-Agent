@@ -1,4 +1,3 @@
-from typing import Dict, Any
 from agent.review.schemas import ConfidenceReport, ReviewDecision
 
 class ConfidenceEngine:

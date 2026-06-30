@@ -1,5 +1,3 @@
-import json
-from pathlib import Path
 from agent.llm.providers.base import BaseLLMClient
 from agent.models.schemas import Task, Plan, Patch, RetrievedContext
 from agent.config import settings, logger

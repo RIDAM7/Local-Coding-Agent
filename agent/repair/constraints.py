@@ -1,5 +1,4 @@
-from typing import List
-from agent.models.schemas import Constraint, ConstraintExtractionResult
+from agent.models.schemas import ConstraintExtractionResult
 from agent.llm.providers.base import BaseLLMClient
 from agent.config import settings, logger
 

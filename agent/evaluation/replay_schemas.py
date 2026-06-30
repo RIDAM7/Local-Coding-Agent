@@ -1,5 +1,5 @@
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from enum import Enum
 
 class ProvenanceType(str, Enum):
@@ -13,7 +13,7 @@ class ReplayTier(str, Enum):
     REGRESSION = "REGRESSION"
     NORMAL = "NORMAL"
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import model_validator
 
 class EnvironmentSnapshot(BaseModel):
     python_version: str

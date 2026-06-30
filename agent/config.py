@@ -75,6 +75,59 @@ class AgentSettings(BaseSettings):
     # so existing runs are byte-for-byte unchanged.
     git_integration: bool = False
 
+    # Phase 9: Context Engine (Repository Understanding). A proactive, 100%-local
+    # layer (on top of agent/retrieval) that builds a durable repo understanding
+    # — tech stack, frameworks, entry points, conventions, dependency map,
+    # architecture summary — before planning. Default-ON because it is local,
+    # zero-config, cached, and never makes a network call. When disabled, the
+    # planner prompt is byte-for-byte identical to Round 1 (pipeline parity).
+    #   CONTEXT_ENGINE_ENABLED — master switch (default true).
+    #   CONTEXT_CACHE          — reuse the cached bundle when the file set is
+    #                            unchanged, instead of a full rescan (default true).
+    #   CONTEXT_DIR            — where the bundle is cached. Relative paths are
+    #                            resolved under the scanned workspace.
+    context_engine_enabled: bool = True
+    context_cache: bool = True
+    context_dir: str = ".localcli/context"
+
+    # Phase 10: Hybrid Execution Engine.
+    #   EXECUTION_MODE — auto | pipeline | agent. `pipeline` is byte-for-byte the
+    #     Round 1 flow; `agent` runs the governed Think->Act->Observe tool loop;
+    #     `auto` lets the Capability Detector pick (agent only when the role model
+    #     has reliable structured output + tool calling + adequate context, else
+    #     pipeline). Default `auto` resolves to pipeline whenever capabilities are
+    #     unknown/insufficient, so existing local setups behave as before.
+    execution_mode: str = "auto"
+    #   OFFLINE_ONLY — hard offline guarantee: preflight rejects any non-Ollama
+    #     provider and the web/remote tools are not registered. Default false.
+    offline_only: bool = False
+    #   Execution Governor caps (shared by BOTH engines). 0 == disabled where noted.
+    max_steps: int = 25
+    tool_call_budget: int = 0
+    run_budget_usd: float = 0.0
+    step_timeout_seconds: int = 120
+    run_timeout_seconds: int = 0
+    #   Capability Detector: allow a one-time cached probe for unknown models.
+    capability_probe: bool = True
+    #   Reviewer escalation (replaces the hard Claude coupling): only runs when the
+    #     governor exhausts iterations with confidence < CONFIDENCE_THRESHOLD.
+    reviewer_enabled: bool = False
+    confidence_threshold: float = 0.75
+
+    # Phase 11: Incremental Planning & Replanning. Replaces plan-once-execute-all
+    # with plan -> execute step -> observe -> replan. Small, validated steps with
+    # replanning on new information.
+    #   INCREMENTAL_PLANNING — master switch (default true). When false, behavior
+    #     is the Round 1 plan-once-execute-all path, byte-for-byte (parity).
+    #   REPLAN_ON_FAILURE   — when a step fails, revise only the REMAINING steps
+    #     (never a full restart; completed steps are untouched). Default true.
+    #   MAX_REPLANS         — bound on replanning, enforced by the Execution
+    #     Governor (a replan counts against the leash with its own stop reason).
+    #     0 disables the cap. Default 3.
+    incremental_planning: bool = True
+    replan_on_failure: bool = True
+    max_replans: int = 3
+
     # Logging
     log_level: str = "DEBUG"
 

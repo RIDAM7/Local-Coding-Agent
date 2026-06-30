@@ -54,6 +54,9 @@ def _pipeline_mocks(create_plan):
     (async) function used for the planner so callers can capture its input."""
     return [
         patch('agent.planner.core.Planner.create_plan', new=create_plan),
+        # Phase 9: keep these refiner-focused tests hermetic — skip the context
+        # engine so no real workspace scan runs and create_plan's bundle arg is None.
+        patch('agent.context.build_context_bundle', AsyncMock(return_value=None)),
         patch('agent.coder.core.Coder.generate_patch',
               AsyncMock(return_value=Patch(operations=[], commands=[]))),
         patch('agent.retrieval.retrieval_manager.RetrievalManager.search_context',
@@ -99,7 +102,7 @@ async def test_orchestrator_uses_refined_task_when_enabled(monkeypatch):
 
     captured = {}
 
-    async def fake_create_plan(self, task):
+    async def fake_create_plan(self, task, context_bundle=None):
         captured["description"] = task.description
         return Plan(goal="g", summary="s", steps=[])
 
@@ -123,7 +126,7 @@ async def test_orchestrator_skips_refiner_when_disabled(monkeypatch):
 
     captured = {}
 
-    async def fake_create_plan(self, task):
+    async def fake_create_plan(self, task, context_bundle=None):
         captured["description"] = task.description
         return Plan(goal="g", summary="s", steps=[])
 
@@ -146,7 +149,7 @@ async def test_orchestrator_falls_back_to_raw_prompt_on_refiner_failure(monkeypa
 
     captured = {}
 
-    async def fake_create_plan(self, task):
+    async def fake_create_plan(self, task, context_bundle=None):
         captured["description"] = task.description
         return Plan(goal="g", summary="s", steps=[])
 
