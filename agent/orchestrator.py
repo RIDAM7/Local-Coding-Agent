@@ -924,6 +924,73 @@ class Orchestrator:
         logger.info(f"Incremental task finished with status {final_status}. Report: {report_path}")
         return report_path
 
+    # --- Phase 16: agent orchestration (opt-in) ------------------------------
+
+    async def run_orchestrated(self, task_description: str, *,
+                               execution_mode: str = "pipeline") -> str:
+        """Coordinator-owned multi-worker run (Phase 16 MVP).
+
+        Builds a parent AgentState with context, memory, and graph evidence,
+        delegates to the Coordinator for decomposition/scheduling/merge/validate,
+        then generates a report. Only called when ``ORCHESTRATION_ENABLED=true``.
+        """
+        from agent.state.agent_state import AgentState, TaskMetadata
+        from agent.orchestration import Coordinator
+        from agent.planning import render_plan_evolution
+
+        logger.info(f"Starting orchestrated task: {task_description}")
+        state = AgentState(
+            user_request=task_description,
+            task=TaskMetadata(description=task_description),
+            execution_mode=execution_mode,
+        )
+        state.objective = task_description
+        state.add_timeline("engine", "orchestrated run started")
+
+        try:
+            from agent.context import build_context_bundle
+            state.add_timeline("context", "context loading started")
+            context_bundle = await build_context_bundle(self.file_manager.workspace)
+            state.loaded_context = context_bundle
+            state.add_timeline("context", "context loaded" if context_bundle else "context disabled")
+        except Exception as e:
+            logger.warning(f"Orchestrated: context engine failed, continuing: {e}")
+            state.add_timeline("context", f"context load failed: {type(e).__name__}")
+
+        try:
+            self.project_memory.load_into_state(state)
+        except Exception as e:
+            logger.warning(f"Orchestrated: project memory load failed, continuing: {e}")
+
+        coordinator = Coordinator(orchestrator=self, safety_mode=self.safety.mode)
+        state = await coordinator.run(state)
+
+        try:
+            self.project_memory.update_from_state(state)
+        except Exception as e:
+            logger.warning(f"Orchestrated: project memory update failed, continuing: {e}")
+
+        final_status = state.final_outputs.status
+        self.last_state = state
+        report = Report(
+            task=task_description,
+            plan=None,
+            retrieved_files=[],
+            files_modified=[fc.path for fc in state.files_modified],
+            execution_results=state.final_outputs.summary,
+            final_status=final_status,
+            execution_outcome=ExecutionOutcome.SUCCESS if final_status == "SUCCESS" else ExecutionOutcome.FAILURE,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        if settings.observability_enabled:
+            from agent.observability import snapshot_for_report
+            report.observability = snapshot_for_report(state)
+        report_path = self.reporter.generate_report(
+            report, plan_evolution=render_plan_evolution(state))
+        state.final_outputs.report_path = report_path
+        logger.info(f"Orchestrated task finished with status {final_status}. Report: {report_path}")
+        return report_path
+
     async def _execute_pipeline_step(self, state, step, *, plan, context, constraints):
         """Execute ONE plan step via the Round 1 coder + validators (no per-step
         repair loop — replanning handles failures). Appends validation signals to

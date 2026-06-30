@@ -144,6 +144,30 @@ class AgentSettings(BaseSettings):
     observability_enabled: bool = True
     verbosity: str = "normal"  # quiet | normal | verbose
 
+    # Phase 15: Session Persistence. Checkpoint AgentState after every step
+    # and enable `localcli resume` to continue an interrupted session.
+    # When disabled, no checkpoint files are written and resume commands
+    # raise a clear error.
+    session_persistence: bool = True
+    session_dir: str = ".localcli"
+
+    # Phase 16: Agent Orchestration Layer. Opt-in coordinator that decomposes
+    # multi-concern tasks into stateless specialized workers. Default off so
+    # existing runs are byte-for-byte unchanged.
+    orchestration_enabled: bool = False
+    max_parallel_workers: int = 1
+    orchestration_budget_usd: float = 0.0
+
+    # Phase 17: Plugin Architecture. Community plugins and MCP are opt-in;
+    # builtin and project plugins load without flags. All plugin tools register
+    # into the same ToolRegistry from Phase 10.
+    plugins_enabled: bool = False
+    plugin_dir: str = ".localcli/community_plugins"
+    plugin_tool_allow: str = ""
+    plugin_tool_deny: str = ""
+    mcp_enabled: bool = False
+    mcp_servers: str = ""
+
     # Logging
     log_level: str = "DEBUG"
 

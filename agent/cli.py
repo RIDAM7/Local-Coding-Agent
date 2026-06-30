@@ -32,6 +32,7 @@ ROLES = ["planner", "coder", "refiner", "repair", "constraint", "reflection", "r
 # bare-task shorthand for `run`.
 KNOWN_SUBCOMMANDS = {
     "run", "config", "models", "index", "search", "symbols", "context", "memory", "graph",
+    "resume", "sessions",
 }
 
 
@@ -144,6 +145,20 @@ async def cmd_run(args):
         return 1
 
     _ensure_index(orchestrator)
+
+    # Phase 16: when orchestration is enabled, the Coordinator owns decomposition,
+    # worker scheduling, merge, and validation. Default off = no behavior change.
+    if settings.orchestration_enabled:
+        from agent.engine.selector import resolve_mode
+        mode, caps = await resolve_mode()
+        report_path = await orchestrator.run_orchestrated(task_description, execution_mode=mode)
+        print(f"\nOrchestrated run complete. Report generated at: {report_path}")
+        if settings.observability_enabled and (args.observe or settings.verbosity == "verbose"):
+            state = getattr(orchestrator, "last_state", None)
+            if state is not None:
+                from agent.observability import render_dashboard
+                print("\n" + render_dashboard(state))
+        return 0
 
     # Phase 10: resolve the execution strategy. `pipeline` is byte-for-byte the
     # Round 1 path (orchestrator.run unchanged); `agent` runs the governed loop.
@@ -344,6 +359,72 @@ async def cmd_symbols(args):
     return 0
 
 
+# --- Phase 15: session commands ----------------------------------------------
+
+def cmd_sessions(args):
+    """List all persisted sessions (Phase 15)."""
+    from agent.session import ResumeManager
+    mgr = ResumeManager()
+    sessions = mgr.list_sessions()
+    if not sessions:
+        print("No sessions found.")
+        return 0
+    print(f"{'Session ID':<14} {'Status':<12} {'Checkpoints':<12} {'Task'}")
+    print("-" * 80)
+    for s in sessions:
+        desc = (s["task_description"] or "")[:48]
+        print(f"{s['session_id']:<14} {s['status']:<12} {s['checkpoint_count']:<12} {desc}")
+    return 0
+
+
+async def cmd_resume(args):
+    """Resume an interrupted session (Phase 15)."""
+    if not settings.session_persistence:
+        print("Session persistence is disabled (SESSION_PERSISTENCE=false). Cannot resume.")
+        return 1
+    from agent.session import ResumeManager
+    from agent.engine.selector import build_engine
+    from agent.safety.controller import SafetyMode
+    from agent.context import build_context_bundle
+    from agent.memory.project_memory import ProjectMemoryManager
+
+    session_id = args.session_id
+    mgr = ResumeManager()
+    try:
+        state, last_step = mgr.resume(session_id)
+    except Exception as e:
+        print(f"Resume error: {e}")
+        return 1
+
+    print(f"Resuming session '{session_id}' from checkpoint step {last_step}.")
+    print(f"Task: {state.user_request[:80]}...")
+
+    # Restore execution context.
+    try:
+        state.loaded_context = await build_context_bundle(settings.get_workspace_path())
+    except Exception:
+        pass
+
+    project_memory = ProjectMemoryManager(settings.get_workspace_path())
+    project_memory.load_into_state(state)
+
+    safety_mode = SafetyMode(auto_approve=False, dry_run=False)
+    engine = build_engine("pipeline" if state.execution_mode == "pipeline" else "agent",
+                          safety_mode=safety_mode,
+                          memory_manager=project_memory,
+                          incremental=settings.incremental_planning)
+
+    # Continue execution from the restored state.
+    state = await engine.execute(state)
+    print(f"\nResumed run complete: status={state.final_outputs.status}, "
+          f"confidence={state.confidence}, steps={state.governor.steps_used}, "
+          f"stop={state.governor.stop_reason}")
+    if settings.observability_enabled:
+        from agent.observability import render_dashboard
+        print("\n" + render_dashboard(state))
+    return 0
+
+
 # --- Parser ------------------------------------------------------------------
 
 def _add_safety_flags(p):
@@ -388,6 +469,12 @@ def build_parser():
 
     sub.add_parser("models", help="Print the resolved role->provider->model routing table (no network)")
 
+    # Phase 15: session persistence & resume.
+    p_resume = sub.add_parser("resume", help="Resume an interrupted session (Phase 15)")
+    p_resume.add_argument("session_id", help="The session ID to resume")
+
+    sub.add_parser("sessions", help="List all persisted sessions (Phase 15)")
+
     return parser
 
 
@@ -421,6 +508,10 @@ async def _dispatch(args):
         return cmd_memory(args)
     if args.subcommand == "graph":
         return cmd_graph(args)
+    if args.subcommand == "sessions":
+        return cmd_sessions(args)
+    if args.subcommand == "resume":
+        return await cmd_resume(args)
     # default: run
     return await cmd_run(args)
 

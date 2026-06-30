@@ -12,6 +12,10 @@ engine + governor) and drives the loop:
 
 All plan state lives inside the shared :class:`AgentState` (via :class:`PlanOps`),
 so nothing here owns a parallel store and Phase 15 resume comes for free.
+
+Phase 15 integration: a Checkpointer records the redacted AgentState after
+every step (success or failure) so that ``localcli resume`` can continue
+from the latest checkpoint.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from agent.engine.governor import Governor
 from agent.planning.plan_state import PlanOps
 from agent.planning.replanner import Replanner
 from agent.planning.step_planner import StepPlanner
+from agent.session import Checkpointer
 from agent.state.agent_state import AgentState, StepResult
 
 
@@ -73,6 +78,14 @@ class IncrementalPlanner:
         governor = governor or Governor.configure(state)
         state.add_timeline("engine", "incremental planning: plan -> execute -> observe -> replan")
 
+        # Phase 15: create a Checkpointer and seed the session store.
+        checkpointer = Checkpointer()
+        if checkpointer.enabled:
+            checkpointer._store.create(
+                task_description=state.user_request,
+                session_id=state.task.id,
+            )
+
         # Plan once up front; the plan lives inside AgentState from here on.
         if not state.plan.steps:
             await self.step_planner.plan(state, plan=plan, context_bundle=context_bundle)
@@ -104,10 +117,12 @@ class IncrementalPlanner:
             if outcome.success:
                 ops.mark_done(step, outcome.summary)
                 state.add_observation(f"step {step.index} done: {outcome.summary or 'ok'}")
+                checkpointer.checkpoint_step(state, step.index)
                 continue
 
             ops.mark_failed(step, outcome.summary)
             state.add_observation(f"step {step.index} failed: {outcome.summary or 'failure'}")
+            checkpointer.checkpoint_step(state, step.index)
 
             # Replan ONLY the remaining steps (bounded by the governor). On a
             # blocked/failed replan the loop stops — never a full restart.

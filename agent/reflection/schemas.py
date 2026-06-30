@@ -21,6 +21,8 @@ class ReflectionCritique(BaseModel):
     severity: str
 
 class ReflectionReport(BaseModel):
+    model_config = {"protected_namespaces": ()}
+    
     result: ReflectionResult
     critiques: List[ReflectionCritique]
     summary: str

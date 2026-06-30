@@ -83,7 +83,15 @@ class AgentEngine(ExecutionEngine):
             lint_validator=self.lint_validator, test_validator=self.test_validator,
             memory_manager=self.memory_manager,
         )
+        from agent.plugins import PluginManager
+        self.plugin_manager = PluginManager(self.registry, workspace=self.workspace)
+        self._plugins_loaded = False
         self.tool_executor = ToolExecutor(self.registry)
+
+    async def _ensure_plugins_loaded(self) -> None:
+        if not self._plugins_loaded:
+            await self.plugin_manager.load_all()
+            self._plugins_loaded = True
 
     @property
     def policy_client(self):
@@ -100,6 +108,7 @@ class AgentEngine(ExecutionEngine):
 
     async def execute(self, state: AgentState) -> AgentState:
         state.execution_mode = "agent"
+        await self._ensure_plugins_loaded()
         if self.incremental:
             return await self._execute_incremental(state)
         state.add_timeline("engine", "agent strategy selected (Think->Act->Observe)")

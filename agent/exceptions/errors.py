@@ -25,3 +25,7 @@ class LLMError(AgentError):
 class PreflightError(AgentError):
     """Raised when pre-run validation of a role's provider/model/credentials fails."""
     pass
+
+class SessionError(AgentError):
+    """Raised when session persistence or resume operations fail."""
+    pass
