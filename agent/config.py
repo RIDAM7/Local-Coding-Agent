@@ -128,6 +128,22 @@ class AgentSettings(BaseSettings):
     replan_on_failure: bool = True
     max_replans: int = 3
 
+    # Phase 12: Project Memory. Local, human-readable markdown files that are
+    # loaded at run start and updated only after successful runs. This is NOT
+    # vector memory: no embeddings, cloud calls, or external database.
+    project_memory_enabled: bool = True
+    project_memory_dir: str = ".localcli/memory"
+
+    # Phase 13: Repository Graph MVP. Local graph.json with import/module edges
+    # and impact queries for primary languages (py/js/ts). No call graph here.
+    repo_graph_enabled: bool = True
+    graph_dir: str = ".localcli"
+
+    # Phase 14: Observability. Timeline events live on AgentState and the
+    # dashboard/report are read-only renderers over that state.
+    observability_enabled: bool = True
+    verbosity: str = "normal"  # quiet | normal | verbose
+
     # Logging
     log_level: str = "DEBUG"
 

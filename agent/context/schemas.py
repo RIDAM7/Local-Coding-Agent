@@ -61,8 +61,10 @@ class ContextBundle(BaseModel):
     entry_points: List[EntryPoint] = Field(default_factory=list)
     conventions: Conventions = Field(default_factory=Conventions)
     dependency_graph: Dict[str, List[str]] = Field(default_factory=dict)
+    repository_graph: Dict[str, str | int] = Field(default_factory=dict)  # Phase 13 graph metadata
     architecture_summary: Optional[str] = None  # None when no LLM was available
     symbol_count: int = 0
+    project_memory: Dict[str, str] = Field(default_factory=dict)  # Phase 12 markdown memory
 
     def to_planner_block(self) -> str:
         """Render a compact, deterministic text block for the planner prompt.
@@ -84,6 +86,17 @@ class ContextBundle(BaseModel):
         if self.entry_points:
             eps = [f"{e.kind}:{e.target}" for e in self.entry_points[:8]]
             lines.append("- Entry points: " + ", ".join(eps))
+        if self.repository_graph:
+            modules = self.repository_graph.get("modules", 0)
+            edges = self.repository_graph.get("edges", 0)
+            lines.append(f"- Repository graph: {modules} modules, {edges} import edges")
+        if self.dependency_graph:
+            graph_bits = []
+            for source, deps in sorted(self.dependency_graph.items())[:8]:
+                if deps:
+                    graph_bits.append(f"{source} -> {', '.join(sorted(deps)[:4])}")
+            if graph_bits:
+                lines.append("- Import graph: " + " | ".join(graph_bits))
         conv = self.conventions
         if conv.primary_language or conv.test_layout or conv.lint_tools:
             bits = []
@@ -102,6 +115,18 @@ class ContextBundle(BaseModel):
             lines.append("- Architecture:")
             for ln in self.architecture_summary.strip().splitlines():
                 lines.append(f"    {ln}")
+        if self.project_memory:
+            lines.append("- Project Memory:")
+            for rel, text in sorted(self.project_memory.items()):
+                entries = []
+                for line in text.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("- "):
+                        entries.append(stripped[2:])
+                if entries:
+                    lines.append(f"    {rel}:")
+                    for entry in entries[:8]:
+                        lines.append(f"      - {entry}")
         return "\n".join(lines)
 
 

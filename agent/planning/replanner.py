@@ -16,7 +16,7 @@ from typing import List, Optional
 
 from agent.config import logger
 from agent.engine.governor import Governor
-from agent.models.schemas import Plan, Task
+from agent.models.schemas import Plan
 from agent.planning.plan_state import PlanOps, StepSpec
 from agent.state.agent_state import AgentState
 
@@ -72,7 +72,9 @@ class Replanner:
             return None
 
         ops = PlanOps(state)
-        done = "\n".join(f"- [done] {s.description}" for s in ops.completed()) or "(none)"
+        done = "\n".join(
+            f"- [{s.status}] {s.description}" for s in state.completed_steps
+        ) or "(none)"
         remaining = "\n".join(f"- {s.description}" for s in ops.remaining()) or "(none)"
         observations = "\n".join(o.note for o in state.observations[-10:]) or "(none)"
         evidence = "\n".join(f"- {e.kind}: {e.detail}" for e in state.evidence[-10:]) or "(none)"
@@ -82,7 +84,7 @@ Do NOT restart the plan or redo completed work. Revise ONLY the steps that still
 remain, taking the failure/observations into account.
 
 <objective>
-{state.objective or state.user_request}
+{state.plan.objective or state.objective or state.user_request}
 </objective>
 
 <completed_steps>

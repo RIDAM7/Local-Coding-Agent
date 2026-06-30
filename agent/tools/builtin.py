@@ -163,6 +163,7 @@ class ApplyPatchTool(Tool):
         self.safety = safety
 
     async def _execute(self, state: AgentState, *, op: str, path: str, content: str = "") -> ToolResult:
+        self._record_graph_impact(state, path)
         old = ""
         if op in ("update_file", "delete_file"):
             try:
@@ -188,6 +189,18 @@ class ApplyPatchTool(Tool):
         state.record_file_change(path, op)
         return ToolResult(summary=f"{op} {path}")
 
+    @staticmethod
+    def _record_graph_impact(state: AgentState, path: str) -> None:
+        try:
+            from agent.config import settings
+            if not settings.repo_graph_enabled:
+                return
+            from agent.graph import GraphBuilder, ImpactAnalyzer
+            graph = GraphBuilder(settings.get_workspace_path()).build(use_cache=True)
+            ImpactAnalyzer(graph).record_impact(state, path)
+        except Exception as e:
+            logger.debug(f"graph impact unavailable for {path}: {e}")
+
 
 class SearchReplaceTool(Tool):
     name = "search_replace"
@@ -203,6 +216,7 @@ class SearchReplaceTool(Tool):
         self.safety = safety
 
     async def _execute(self, state: AgentState, *, path: str, search: str, replace: str = "") -> ToolResult:
+        ApplyPatchTool._record_graph_impact(state, path)
         old = await self.fm.read_file(path)
         new = apply_search_replace_text(old, search, replace)   # exactly-once invariant
         if not self.safety.confirm_file_op("search_replace", path, old, new):
@@ -252,11 +266,19 @@ class MemoryReadTool(Tool):
         if not self.mm or not getattr(self.mm, "enabled", False):
             return ToolResult(ok=False, status="skipped", summary="memory disabled")
         try:
-            hits = await self.mm.successful_repairs(query, [], limit=3)
+            if hasattr(self.mm, "load"):
+                bundle = self.mm.load()
+                hits = bundle.summaries[:3]
+                for rel in bundle.used_files:
+                    if rel not in state.memory_refs.markdown_files:
+                        state.memory_refs.markdown_files.append(rel)
+            else:
+                hits = await self.mm.successful_repairs(query, [], limit=3)
         except Exception as e:
             return ToolResult(ok=False, status="error", summary=f"memory read failed: {e}")
         for h in hits:
-            state.memory_refs.summaries.append(str(getattr(h, "content", ""))[:200])
+            content = h if isinstance(h, str) else getattr(h, "content", "")
+            state.memory_refs.summaries.append(str(content)[:200])
         return ToolResult(summary=f"{len(hits)} memory hits", data=len(hits))
 
 

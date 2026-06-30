@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from pydantic import BaseModel, Field
 
@@ -35,6 +35,9 @@ from agent.state.agent_state import AgentState
 from agent.tools import ToolExecutor, build_default_registry
 from agent.validation import BuildValidator, LintValidator, TestValidator
 from agent.retrieval import RipgrepSearch, SymbolIndex, TreeSitterIndexer
+
+if TYPE_CHECKING:
+    from agent.planning import StepOutcome
 
 
 class AgentAction(BaseModel):

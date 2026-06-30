@@ -2,7 +2,7 @@ from pathlib import Path
 import os
 from datetime import datetime, timezone
 from agent.models.schemas import Report
-from agent.config import logger
+from agent.config import logger, settings
 from agent.safety.redact import redact
 
 class Reporter:
@@ -76,6 +76,14 @@ class Reporter:
         if plan_evolution:
             content.append(plan_evolution)
             content.append("\n\n")
+
+        if settings.observability_enabled and report.observability:
+            try:
+                from agent.observability import render_report_view
+                content.append(render_report_view(report.observability))
+                content.append("\n")
+            except Exception as e:
+                logger.warning(f"Observability report rendering failed: {e}")
 
         content.append("## Retrieved Context\n")
         if report.retrieved_files:

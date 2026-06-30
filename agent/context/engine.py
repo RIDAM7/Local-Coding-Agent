@@ -70,6 +70,30 @@ class ContextEngine:
 
         logger.info("Context engine: building fresh context bundle.")
         scan = self.scanner.scan(self.workspace)
+        dependency_graph = scan.dependency_graph
+        repository_graph = {}
+        if settings.repo_graph_enabled:
+            try:
+                from agent.graph.builder import GraphBuilder
+                graph_builder = GraphBuilder(self.workspace, scanner=self.scanner)
+                cached_graph = graph_builder.store.load()
+                if cached_graph is not None and cached_graph.fingerprint == scan.fingerprint:
+                    graph = cached_graph
+                else:
+                    graph = graph_builder.build_from_scan(scan)
+                dependency_graph = dict(scan.dependency_graph)
+                dependency_graph.update({
+                    path: module.dependencies
+                    for path, module in graph.modules.items()
+                    if module.dependencies
+                })
+                repository_graph = {
+                    "path": str(graph_builder.store.path),
+                    "modules": len(graph.modules),
+                    "edges": len(graph.edges),
+                }
+            except Exception as e:
+                logger.warning(f"Context engine: repository graph unavailable, using scan map: {e}")
 
         tech_stack = detectors.detect_tech_stack(scan.manifests)
         frameworks = detectors.detect_frameworks(tech_stack)
@@ -87,7 +111,8 @@ class ContextEngine:
             tech_stack=tech_stack,
             entry_points=entry_points,
             conventions=conventions,
-            dependency_graph=scan.dependency_graph,
+            dependency_graph=dependency_graph,
+            repository_graph=repository_graph,
             symbol_count=scan.symbol_count,
         )
 

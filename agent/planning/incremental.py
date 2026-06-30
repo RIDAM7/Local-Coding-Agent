@@ -90,7 +90,6 @@ class IncrementalPlanner:
 
             governor.mark_step()
             step.status = "running"
-            state.objective = step.description
             state.add_timeline("engine", f"step {step.index}: {step.description}")
 
             baseline = len(state.validation_results)

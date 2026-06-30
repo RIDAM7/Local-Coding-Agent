@@ -23,6 +23,7 @@ from agent.review.arbitration import Arbitrator
 from agent.reflection.manager import ReflectionManager
 from agent.reflection.schemas import ReflectionResult
 from agent.safety.controller import SafetyController, SafetyMode
+from agent.memory.project_memory import ProjectMemoryManager
 
 class Orchestrator:
     def __init__(self, workspace_path: Path = None, reports_dir: Path = None, memory_manager=None, reflection_enabled: bool = True, shadow_reflection: bool = False, claude_enabled: bool = True, claude_always_on: bool = False, budget_enforcement: bool = True, safety_mode: SafetyMode = None, safety_controller: SafetyController = None):
@@ -32,6 +33,7 @@ class Orchestrator:
         self.claude_enabled = claude_enabled
         self.claude_always_on = claude_always_on
         self.memory_manager = memory_manager
+        self.project_memory = ProjectMemoryManager(ws_path)
         # Phase 5: safety controls. The CLI (main.py) builds an interactive
         # controller from --yes/--dry-run. For programmatic/test construction the
         # default auto-approves confirmation prompts (so no run hangs on stdin) —
@@ -76,12 +78,23 @@ class Orchestrator:
         
         # Reflection component
         self.reflection_manager = ReflectionManager(build_client("reflection"))
+        self.last_state = None
 
     async def run(self, task_description: str, injected_memories: list = None) -> str:
         logger.info(f"Starting new task: {task_description}")
         
         original_task = Task(description=task_description)
         task = Task(description=task_description)
+        runtime_state = None
+        try:
+            from agent.state.agent_state import AgentState, TaskMetadata
+            runtime_state = AgentState(user_request=task_description,
+                                       task=TaskMetadata(description=task_description),
+                                       execution_mode="pipeline")
+            runtime_state.objective = task_description
+            runtime_state.add_timeline("engine", "pipeline run started")
+        except Exception:
+            runtime_state = None
 
         # Phase 3: optional prompt refinement (toggleable, fail-open). Runs BEFORE
         # constraint extraction / planning. The untouched original_task is always
@@ -169,13 +182,22 @@ class Orchestrator:
         final_status = "FAILURE"
         
         try:
+            if runtime_state is not None:
+                runtime_state.add_timeline("planning", "constraint extraction started")
             extraction_res = await self.constraint_extractor.extract(task.description)
             if not extraction_res.success:
                 msg = "Task failed: Constraint extraction failed and explicit constraint language was found. Failing closed."
                 logger.error(msg)
+                if runtime_state is not None:
+                    runtime_state.final_outputs.status = "FAILURE"
+                    runtime_state.final_outputs.summary = msg
+                    runtime_state.add_timeline("failure", msg)
+                    self.last_state = runtime_state
                 return msg
                 
             constraints = extraction_res.constraints
+            if runtime_state is not None:
+                runtime_state.add_timeline("planning", f"constraints extracted: {len(constraints)}")
 
             # Phase 9: build/load the repository Context Bundle (local, cached) and
             # inject it into the planner prompt. When CONTEXT_ENGINE_ENABLED is
@@ -186,20 +208,71 @@ class Orchestrator:
             # mid-run model call; `localcli context` builds the richer summary.
             context_bundle = None
             try:
+                if runtime_state is not None:
+                    runtime_state.add_timeline("context", "context loading started")
                 from agent.context import build_context_bundle
                 context_bundle = await build_context_bundle(self.file_manager.workspace)
+                if runtime_state is not None:
+                    runtime_state.add_timeline("context", "context loaded" if context_bundle else "context disabled")
             except Exception as e:
                 logger.warning(f"Context engine failed; continuing without it: {e}")
+                if runtime_state is not None:
+                    runtime_state.add_timeline("context", f"context load failed: {type(e).__name__}")
 
+            try:
+                if runtime_state is not None:
+                    runtime_state.add_timeline("memory", "project memory loading started")
+                if runtime_state is not None:
+                    runtime_state.loaded_context = context_bundle
+                    bundle = self.project_memory.load_into_state(runtime_state)
+                    context_bundle = runtime_state.loaded_context
+                else:
+                    bundle = self.project_memory.load()
+                    if context_bundle is not None:
+                        self.project_memory.inject_into_context(context_bundle, bundle)
+                if runtime_state is not None:
+                    runtime_state.add_timeline("memory", f"project memory loaded: {len(bundle.used_files)} file(s)")
+            except Exception as e:
+                logger.warning(f"Project memory load failed; continuing without it: {e}")
+                if runtime_state is not None:
+                    runtime_state.add_timeline("memory", f"project memory load failed: {type(e).__name__}")
+
+            if runtime_state is not None:
+                runtime_state.add_timeline("planning", "planner started")
             plan = await self.planner.create_plan(task, context_bundle)
+            if runtime_state is not None:
+                runtime_state.add_timeline("planning", f"planner produced {len(plan.steps)} step(s)")
+                runtime_state.add_timeline("retrieval", "retrieval started")
             context = await self.retrieval_manager.search_context(task_description, plan)
+            if runtime_state is not None:
+                runtime_state.add_timeline("retrieval", f"retrieved {context.total_files if context else 0} file(s)")
+            try:
+                if runtime_state is not None and settings.repo_graph_enabled and context:
+                    runtime_state.add_timeline("graph", "graph impact lookup started")
+                    from agent.graph import GraphBuilder, ImpactAnalyzer
+                    graph = GraphBuilder(self.file_manager.workspace).build(use_cache=True)
+                    analyzer = ImpactAnalyzer(graph)
+                    for res in context.results[:10]:
+                        analyzer.record_impact(runtime_state, res.file)
+                    runtime_state.add_timeline("graph", "graph impact lookup complete")
+            except Exception as e:
+                logger.warning(f"Repository graph impact lookup failed; continuing: {e}")
+                if runtime_state is not None:
+                    runtime_state.add_timeline("graph", f"graph impact lookup failed: {type(e).__name__}")
             
             MAX_CLAUDE_REPAIR_CYCLES = 1
             claude_cycles = 0
             external_review_report = None
             
             while claude_cycles <= MAX_CLAUDE_REPAIR_CYCLES:
+                if runtime_state is not None:
+                    runtime_state.add_timeline("planning", "coder patch generation started")
                 patch = await self.coder.generate_patch(task, plan, context)
+                if runtime_state is not None:
+                    runtime_state.add_timeline(
+                        "planning",
+                        f"coder produced {len(patch.operations)} operation(s), {len(patch.commands)} command(s)",
+                    )
                 
                 reflection_triggered = False
                 reflection_retry_used = False
@@ -216,6 +289,8 @@ class Orchestrator:
                     while self.reflection_enabled and reflection_passes < 2:
                         reflection_passes += 1
                         logger.info(f"Running Reflection pass {reflection_passes}...")
+                        if runtime_state is not None:
+                            runtime_state.add_timeline("reflection", f"reflection pass {reflection_passes} started")
                         reflection_triggered = True
                         reflection_report = await self.reflection_manager.reflect(
                             task, constraints, context, mem_summaries, patch
@@ -245,6 +320,8 @@ class Orchestrator:
                     original_patch = patch
                     
                     logger.info(f"Running patch validation (Attempt {attempts})...")
+                    if runtime_state is not None:
+                        runtime_state.add_timeline("validation", f"patch validation attempt {attempts} started")
                     patch_val_result = self.patch_validator.validate_and_repair(patch)
                     
                     validation_report = ValidationReport()
@@ -252,6 +329,8 @@ class Orchestrator:
                     
                     if not patch_val_result.is_valid:
                         logger.error("Patch validation failed. Aborting current attempt.")
+                        if runtime_state is not None:
+                            runtime_state.add_timeline("validation", "patch validation failed")
                         if attempts == 0:
                             execution_results = "Initial patch validation failed. See diagnostics."
                             final_status = "FAILURE"
@@ -279,6 +358,8 @@ class Orchestrator:
                             
                         if not patch.operations and not patch.commands:
                             logger.warning("Generated patch is entirely empty after validation.")
+                            if runtime_state is not None:
+                                runtime_state.add_timeline("validation", "patch was empty")
                             if attempts == 0:
                                 execution_results = "Initial patch was empty. Nothing to do."
                                 final_status = "SUCCESS"
@@ -312,6 +393,8 @@ class Orchestrator:
                                     all_success = False
                             else:
                                 logger.info("Applying patches...")
+                                if runtime_state is not None:
+                                    runtime_state.add_timeline("engine", f"applying {len(patch.operations)} file operation(s)")
                                 for op in patch.operations:
                                     try:
                                         # Phase 5: preview a unified diff and require
@@ -343,20 +426,30 @@ class Orchestrator:
                                             await self.file_manager.create_file(op.path, new_content)
                                             files_modified.append(op.path)
                                             self.rollback_manager.track_new_file(op.path)
+                                            if runtime_state is not None:
+                                                runtime_state.record_file_change(op.path, op.type)
                                         elif op.type in ("update_file", "search_replace"):
                                             await self.file_manager.update_file(op.path, new_content)
                                             files_modified.append(op.path)
+                                            if runtime_state is not None:
+                                                runtime_state.record_file_change(op.path, op.type)
                                     except Exception as e:
                                         logger.error(f"Failed to apply patch operation: {e}")
                                         
                                 build_res = await self.build_validator.validate()
                                 validation_report.build_result = build_res
+                                if runtime_state is not None:
+                                    runtime_state.add_timeline("validation", f"BUILD {'passed' if build_res.success else 'failed'}")
                                 
                                 lint_res = await self.lint_validator.validate()
                                 validation_report.lint_result = lint_res
+                                if runtime_state is not None:
+                                    runtime_state.add_timeline("validation", f"LINT {'passed' if lint_res.success else 'failed'}")
                                 
                                 test_res = await self.test_validator.validate()
                                 validation_report.test_result = test_res
+                                if runtime_state is not None:
+                                    runtime_state.add_timeline("validation", f"TEST {'passed' if test_res.success else 'failed'}")
 
                                 # Phase 4a: optionally run the coder's proposed commands.
                                 # Gated behind EXECUTE_COMMANDS (default off) so nothing
@@ -385,6 +478,8 @@ class Orchestrator:
                                         except ExecutionError as e:
                                             cmd_result = CommandExecution(command=cmd, stdout="", stderr=str(e), exit_code=124, duration=0.0)
                                         commands_executed.append(cmd_result)
+                                        if runtime_state is not None:
+                                            runtime_state.add_timeline("tool", f"command {cmd}: exit={cmd_result.exit_code}")
                                         if cmd_result.exit_code != 0:
                                             commands_success = False
                                             if first_failed_cmd is None:
@@ -421,6 +516,8 @@ class Orchestrator:
                         if attempts < max_attempts:
                             attempts += 1
                             logger.info(f"Validation failed. Initiating repair loop attempt {attempts}/{max_attempts}.")
+                            if runtime_state is not None:
+                                runtime_state.add_timeline("repair", f"repair attempt {attempts} started")
                             repair_context = await self.repair_manager.build_context(task, plan, validation_report, constraints, repair_scope)
                             if repair_history and repair_history[-1].classification == "UNKNOWN":
                                  repair_history[-1].classification = repair_context.normalized_diagnostic.classification
@@ -443,6 +540,8 @@ class Orchestrator:
                 rollback_results = {}
                 if not all_success and final_status == "FAILURE":
                      logger.warning("Max repair attempts failed. Triggering rollback.")
+                     if runtime_state is not None:
+                         runtime_state.add_timeline("repair", "rollback started")
                      self.rollback_manager.restore()
                      rollback_triggered = True
                      rollback_results = self.rollback_manager.verify()
@@ -537,9 +636,13 @@ class Orchestrator:
         except AgentError as e:
             execution_results = f"Agent encountered an error: {str(e)}"
             logger.error(execution_results)
+            if runtime_state is not None:
+                runtime_state.add_timeline("failure", execution_results)
         except Exception as e:
             execution_results = f"Unexpected error: {str(e)}"
             logger.exception(execution_results)
+            if runtime_state is not None:
+                runtime_state.add_timeline("failure", execution_results)
             
         if 'routing_cause' not in locals() or not routing_cause:
             routing_cause = RoutingCause.SKIPPED_HIGH_CONFIDENCE
@@ -616,6 +719,8 @@ class Orchestrator:
             self.budget_manager.add_cost(cost_summary.total_est_cost)
         if self.llm_usages:
             logger.debug(f"LLM usage this run: {self.llm_usages}")
+        if runtime_state is not None:
+            runtime_state.governor.cost_used_usd = cost_summary.total_est_cost
 
         # Phase 7B: on a successful run commit the applied changes (redacted message);
         # on failure use the complementary git rollback. Never in --dry-run.
@@ -632,6 +737,44 @@ class Orchestrator:
                     logger.info("Git: rolled back working tree (complementing snapshot rollback).")
             except Exception as e:
                 logger.warning(f"Git: post-run operation failed: {e}")
+
+        try:
+            if runtime_state is not None:
+                from agent.state.agent_state import StepResult, ValidationResult
+                runtime_state.final_outputs.status = final_status
+                runtime_state.final_outputs.summary = execution_results
+                if plan and hasattr(plan, "steps"):
+                    if not runtime_state.completed_steps:
+                        for i, step in enumerate(plan.steps):
+                            runtime_state.completed_steps.append(StepResult(
+                                index=i,
+                                description=step.description,
+                                status="done" if final_status == "SUCCESS" else "failed",
+                                summary=step.expected_output,
+                                acceptance=step.expected_output,
+                            ))
+                if "validation_report" in locals() and validation_report:
+                    for stage, res in (
+                        ("BUILD", validation_report.build_result),
+                        ("LINT", validation_report.lint_result),
+                        ("TEST", validation_report.test_result),
+                    ):
+                        if res:
+                            runtime_state.validation_results.append(ValidationResult(
+                                stage=stage, success=res.success,
+                                detail=res.stderr or res.stdout or "",
+                            ))
+                for summary in mem_summaries:
+                    if summary not in runtime_state.memory_refs.summaries:
+                        runtime_state.memory_refs.summaries.append(summary)
+                if final_status == "SUCCESS":
+                    self.project_memory.update_from_state(runtime_state)
+        except Exception as e:
+            logger.warning(f"Project memory update failed; continuing: {e}")
+        if runtime_state is not None:
+            runtime_state.add_timeline("completion" if final_status == "SUCCESS" else "failure",
+                                       f"run finished: {final_status}")
+            self.last_state = runtime_state
 
         report = Report(
             task=task.description,
@@ -664,8 +807,12 @@ class Orchestrator:
             claude_override_count=1 if (arbitration_report and "CLAUDE" in arbitration_report.overridden_systems) else 0,
             reflection_override_count=1 if (arbitration_report and "REFLECTION" in arbitration_report.overridden_systems) else 0,
             arbitration_triggered_count=1 if (arbitration_report and arbitration_report.overridden_systems) else 0,
-            claude_false_approval_count=1 if (arbitration_report and arbitration_report.decision == "REJECT_VALIDATION_FAILED" and "CLAUDE" in arbitration_report.overridden_systems) else 0
+            claude_false_approval_count=1 if (arbitration_report and arbitration_report.decision == "REJECT_VALIDATION_FAILED" and "CLAUDE" in arbitration_report.overridden_systems) else 0,
+            observability=None,
         )
+        if runtime_state is not None and settings.observability_enabled:
+            from agent.observability import snapshot_for_report
+            report.observability = snapshot_for_report(runtime_state, cost_summary=cost_summary)
         
         report_path = self.reporter.generate_report(report, constraints=constraints if 'constraints' in locals() else [], repair_scope=repair_scope if 'repair_scope' in locals() else None, rollback_results=rollback_results if 'rollback_results' in locals() else {}, refinement=refinement, raw_task=original_task.description)
         logger.info(f"Task finished with status {final_status}. Report: {report_path}")
@@ -692,26 +839,53 @@ class Orchestrator:
         state = AgentState(user_request=task_description,
                            task=TaskMetadata(description=task_description),
                            execution_mode="pipeline")
+        state.objective = task_description
+        state.add_timeline("engine", "incremental pipeline run started")
         governor = Governor.configure(state)
 
         # Constraints + context, reusing Round 1 components.
         try:
             extraction_res = await self.constraint_extractor.extract(task_description)
             constraints = extraction_res.constraints if extraction_res.success else []
+            state.add_timeline("planning", f"constraints extracted: {len(constraints)}")
         except Exception as e:
             logger.warning(f"Incremental: constraint extraction failed, continuing: {e}")
+            state.add_timeline("planning", f"constraint extraction failed: {type(e).__name__}")
             constraints = []
 
         context_bundle = None
         try:
             from agent.context import build_context_bundle
+            state.add_timeline("context", "context loading started")
             context_bundle = await build_context_bundle(self.file_manager.workspace)
+            state.add_timeline("context", "context loaded" if context_bundle else "context disabled")
         except Exception as e:
             logger.warning(f"Incremental: context engine failed, continuing: {e}")
+            state.add_timeline("context", f"context load failed: {type(e).__name__}")
+
+        try:
+            state.loaded_context = context_bundle
+            self.project_memory.load_into_state(state)
+            context_bundle = state.loaded_context
+        except Exception as e:
+            logger.warning(f"Incremental: project memory load failed, continuing: {e}")
 
         # Plan once (reuse the Round 1 planner); the plan lives inside AgentState.
+        state.add_timeline("planning", "planner started")
         plan = await self.planner.create_plan(Task(description=task_description), context_bundle)
+        state.add_timeline("planning", f"planner produced {len(plan.steps)} step(s)")
+        state.add_timeline("retrieval", "retrieval started")
         context = await self.retrieval_manager.search_context(task_description, plan)
+        state.add_timeline("retrieval", f"retrieved {context.total_files if context else 0} file(s)")
+        try:
+            if settings.repo_graph_enabled and context:
+                from agent.graph import GraphBuilder, ImpactAnalyzer
+                graph = GraphBuilder(self.file_manager.workspace).build(use_cache=True)
+                analyzer = ImpactAnalyzer(graph)
+                for res in context.results[:10]:
+                    analyzer.record_impact(state, res.file)
+        except Exception as e:
+            logger.warning(f"Incremental: repository graph impact lookup failed, continuing: {e}")
 
         async def step_executor(st, step):
             return await self._execute_pipeline_step(st, step, plan=plan, context=context,
@@ -723,8 +897,13 @@ class Orchestrator:
         )
         await inc.run(state, step_executor, governor=governor, plan=plan,
                       context_bundle=context_bundle)
+        try:
+            self.project_memory.update_from_state(state)
+        except Exception as e:
+            logger.warning(f"Incremental: project memory update failed, continuing: {e}")
 
         final_status = state.final_outputs.status
+        self.last_state = state
         retrieved_files = [res.file for res in context.results] if context else []
         report = Report(
             task=task_description,
@@ -736,6 +915,9 @@ class Orchestrator:
             execution_outcome=ExecutionOutcome.SUCCESS if final_status == "SUCCESS" else ExecutionOutcome.FAILURE,
             timestamp=datetime.now(timezone.utc).isoformat(),
         )
+        if settings.observability_enabled:
+            from agent.observability import snapshot_for_report
+            report.observability = snapshot_for_report(state)
         report_path = self.reporter.generate_report(
             report, constraints=constraints,
             plan_evolution=render_plan_evolution(state))

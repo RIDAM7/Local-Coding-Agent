@@ -30,7 +30,9 @@ ROLES = ["planner", "coder", "refiner", "repair", "constraint", "reflection", "r
 
 # Subcommands argparse owns; anything else as the first token is treated as a
 # bare-task shorthand for `run`.
-KNOWN_SUBCOMMANDS = {"run", "config", "models", "index", "search", "symbols", "context"}
+KNOWN_SUBCOMMANDS = {
+    "run", "config", "models", "index", "search", "symbols", "context", "memory", "graph",
+}
 
 
 # --- Routing table -----------------------------------------------------------
@@ -152,18 +154,21 @@ async def cmd_run(args):
     if mode == "agent":
         from agent.state.agent_state import AgentState, TaskMetadata
         from agent.context import build_context_bundle
+        from agent.memory.project_memory import ProjectMemoryManager
         state = AgentState(user_request=task_description,
                            task=TaskMetadata(description=task_description))
         try:
             state.loaded_context = await build_context_bundle(settings.get_workspace_path())
         except Exception:
             pass
+        project_memory = ProjectMemoryManager(settings.get_workspace_path())
+        project_memory.load_into_state(state)
         if caps:
             state.capabilities = caps.model_dump()
         # Phase 11: incremental planning is on by default (settings); the agent
         # loop then runs plan -> execute step -> observe -> replan.
         engine = build_engine("agent", safety_mode=safety_mode,
-                              memory_manager=orchestrator.memory_manager,
+                              memory_manager=project_memory,
                               incremental=settings.incremental_planning)
         state = await engine.execute(state)
         print(f"\nAgent run complete: status={state.final_outputs.status}, "
@@ -173,6 +178,10 @@ async def cmd_run(args):
         if settings.incremental_planning and state.plan.revisions:
             from agent.planning import render_plan_evolution
             print("\n" + render_plan_evolution(state))
+        project_memory.update_from_state(state)
+        if settings.observability_enabled and (args.observe or settings.verbosity == "verbose"):
+            from agent.observability import render_dashboard
+            print("\n" + render_dashboard(state))
         return 0
 
     # Phase 11: pipeline strategy with step-wise execution + replanning when
@@ -183,6 +192,11 @@ async def cmd_run(args):
     else:
         report_path = await orchestrator.run(task_description)
     print(f"\nExecution complete. Report generated at: {report_path}")
+    if settings.observability_enabled and (args.observe or settings.verbosity == "verbose"):
+        state = getattr(orchestrator, "last_state", None)
+        if state is not None:
+            from agent.observability import render_dashboard
+            print("\n" + render_dashboard(state))
     return 0
 
 
@@ -241,6 +255,49 @@ async def cmd_context(args):
     print(f"Architecture    : {'LLM summary' if bundle.architecture_summary else 'machine-only (no LLM)'}")
     print(f"\nCached at: {engine.context_dir}")
     print("  repo_context.json, architecture.md, conventions.md, dependency_graph.json")
+    return 0
+
+
+def cmd_memory(args):
+    """Phase 12: view local project-memory markdown files."""
+    from agent.memory.project_memory import ProjectMemoryManager
+
+    manager = ProjectMemoryManager(settings.get_workspace_path())
+    if not manager.enabled:
+        print("Project memory is disabled (PROJECT_MEMORY_ENABLED=false).")
+        return 0
+    bundle = manager.load()
+    print(f"Project Memory: {manager.relative_dir}")
+    if not bundle.files:
+        print("(no project memory files)")
+        return 0
+    for rel in sorted(bundle.files):
+        print("\n" + "=" * 52)
+        print(rel)
+        print("-" * 52)
+        print(bundle.files[rel].rstrip())
+    if bundle.recovered_files:
+        print("\nRecovered/normalized:")
+        for rel in bundle.recovered_files:
+            print(f"- {rel}")
+    return 0
+
+
+def cmd_graph(args):
+    """Phase 13: repository graph impact query."""
+    if getattr(args, "graph_action", None) != "impact":
+        print("Usage: localcli graph impact <file>")
+        return 2
+    from agent.graph import GraphBuilder, ImpactAnalyzer
+
+    if not settings.repo_graph_enabled:
+        print("Repository graph is disabled (REPO_GRAPH_ENABLED=false).")
+        return 0
+    graph = GraphBuilder(settings.get_workspace_path()).build(force=args.refresh)
+    dependents = ImpactAnalyzer(graph).dependents(args.file)
+    print(f"Impact for {args.file}: {len(dependents)} dependent file(s)")
+    for dep in dependents:
+        print(f"- {dep}")
     return 0
 
 
@@ -303,6 +360,7 @@ def build_parser():
     p_run = sub.add_parser("run", help="Run an end-to-end coding task")
     p_run.add_argument("task", nargs="*", help="The task description")
     p_run.add_argument("--reindex", action="store_true", help="Force full rebuild of the index first")
+    p_run.add_argument("--observe", action="store_true", help="Print the Phase 14 AgentState dashboard after the run")
     _add_safety_flags(p_run)
 
     p_index = sub.add_parser("index", help="Build/update the workspace index")
@@ -315,6 +373,14 @@ def build_parser():
 
     p_context = sub.add_parser("context", help="Generate/refresh the repository Context Bundle (Phase 9, local)")
     p_context.add_argument("--refresh", action="store_true", help="Force a full rescan, ignoring the cache")
+
+    sub.add_parser("memory", help="View local project memory markdown files (Phase 12)")
+
+    p_graph = sub.add_parser("graph", help="Repository graph queries (Phase 13 MVP)")
+    graph_sub = p_graph.add_subparsers(dest="graph_action")
+    p_impact = graph_sub.add_parser("impact", help="List files that depend on a file")
+    p_impact.add_argument("file", help="Repository-relative file path")
+    p_impact.add_argument("--refresh", action="store_true", help="Force graph regeneration first")
 
     p_config = sub.add_parser("config", help="Configuration utilities")
     config_sub = p_config.add_subparsers(dest="config_action")
@@ -351,6 +417,10 @@ async def _dispatch(args):
         return await cmd_symbols(args)
     if args.subcommand == "context":
         return await cmd_context(args)
+    if args.subcommand == "memory":
+        return cmd_memory(args)
+    if args.subcommand == "graph":
+        return cmd_graph(args)
     # default: run
     return await cmd_run(args)
 

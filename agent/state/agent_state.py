@@ -205,9 +205,15 @@ class AgentState(BaseModel):
 
     def add_observation(self, note: str) -> None:
         self.observations.append(Observation(note=note))
-        self.timeline.append(TimelineEvent(kind="observation", message=note))
+        self.add_timeline("observation", note)
 
     def add_timeline(self, kind: str, message: str) -> None:
+        try:
+            from agent.config import settings
+            if not settings.observability_enabled:
+                return
+        except Exception:
+            pass
         self.timeline.append(TimelineEvent(kind=kind, message=message))
 
     def record_file_change(self, path: str, op: str, summary: str = "") -> None:

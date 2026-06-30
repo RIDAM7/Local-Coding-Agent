@@ -223,6 +223,7 @@ class Report(BaseModel):
     reflection_retry_used: bool = Field(False, description="Whether a single reflection retry was used")
     reflection_result: Optional[str] = Field(None, description="Final reflection result (PASS/WARNING/FAIL)")
     external_review_report: Optional[Any] = Field(None, description="External review report payload")
+    observability: Optional[Dict[str, Any]] = Field(None, description="AgentState observability snapshot (Phase 14)")
     
     # Arbitration Telemetry
     arbitration_report: Optional[ArbitrationReport] = Field(None, description="The final arbitration decision")
